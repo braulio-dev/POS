@@ -79,6 +79,52 @@ function timestamp(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// --- Payment block --------------------------------------------------------
+
+/**
+ * How the customer paid, as it appears under the total.
+ *
+ * A cash sale prints what it always did — RECIBIDO and CAMBIO, the two numbers
+ * the customer checks before walking away. A card sale prints the authorisation
+ * number instead, because that is the only thing either side can quote if the
+ * charge is later disputed, and a slip without it is worth nothing.
+ *
+ * Reads defensively: a sale from before the terminal existed carries no split
+ * at all, and must still print the cash receipt it printed last year.
+ */
+function paymentLines(sale) {
+  const cardCents = Number(sale.cardCents) || 0
+  const cashCents = sale.cashCents === undefined || sale.cashCents === null
+    ? Number(sale.totalCents) - cardCents
+    : Number(sale.cashCents)
+
+  if (cardCents <= 0) {
+    return [
+      line(columns('RECIBIDO', money(sale.receivedCents))),
+      line(columns('CAMBIO', money(sale.changeCents))),
+    ]
+  }
+
+  const out = []
+  // Only shown on a split tender. On a pure card sale a "EFECTIVO $0.00" row
+  // reads as a field that failed rather than as a fact.
+  if (cashCents > 0) out.push(line(columns('EFECTIVO', money(cashCents))))
+  out.push(line(columns('TARJETA', money(cardCents))))
+
+  const brand = [sale.cardBrand, sale.cardLast4 ? `****${sale.cardLast4}` : null]
+    .filter(Boolean).join(' ')
+  if (brand) out.push(line(columns('', brand)))
+  if (sale.terminalReference) out.push(line(columns('AUT.', String(sale.terminalReference))))
+
+  if (cashCents > 0) {
+    out.push(
+      line(columns('RECIBIDO', money(sale.receivedCents))),
+      line(columns('CAMBIO', money(sale.changeCents))),
+    )
+  }
+  return out
+}
+
 // --- Receipts -------------------------------------------------------------
 
 /**
@@ -117,8 +163,7 @@ function buildReceipt(sale, storeName = 'Abarrotes "El Paisa"') {
     line(columns('TOTAL', money(sale.totalCents), WIDTH)),
     CMD.sizeNormal,
     CMD.boldOff,
-    line(columns('RECIBIDO', money(sale.receivedCents))),
-    line(columns('CAMBIO', money(sale.changeCents))),
+    ...paymentLines(sale),
     line(rule()),
     CMD.alignCenter,
     line('Gracias por su compra'),
@@ -168,6 +213,13 @@ function buildTestPage() {
  * week later when three cortes were taken the same day.
  */
 function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
+  // Cuts taken before the terminal existed carry no split, and every peso in
+  // them was cash by definition — so the total is the cash.
+  const cardCents = Number(corte.cardCents) || 0
+  const cashCents = corte.cashCents === undefined || corte.cashCents === null
+    ? Number(corte.totalCents) - cardCents
+    : Number(corte.cashCents)
+
   return Buffer.concat([
     CMD.init,
     CMD.codepagePC850,
@@ -183,15 +235,31 @@ function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
     line(columns('DESDE', timestamp(corte.openedAt))),
     line(columns('HASTA', timestamp(corte.createdAt))),
     line(columns('VENTAS', String(corte.saleCount))),
+    // Only when a name was typed: an empty CAJERO row reads as a field that
+    // failed, rather than as a cut taken before the register asked for one.
+    ...(corte.cashier ? [line(columns('CAJERO', String(corte.cashier)))] : []),
     line(rule()),
+
+    // The breakdown goes above the big number so it reads as an explanation of
+    // it. TOTAL VENDIDO is what the shop took; EFECTIVO is what is in the hand.
+    // A cut where those differ and the slip only showed one of them is a cut
+    // nobody can check a week later.
+    ...(cardCents > 0 ? [
+      line(columns('TOTAL VENDIDO', money(corte.totalCents))),
+      line(columns('TARJETA', money(cardCents))),
+      line(rule()),
+    ] : []),
+
     CMD.boldOn,
     CMD.sizeDoubleHeight,
-    line(columns('EFECTIVO', money(corte.totalCents), WIDTH)),
+    // Cash only — this is the number the cashier physically counts out. Printing
+    // the sales total here is precisely the desync this split exists to stop.
+    line(columns('EFECTIVO', money(cashCents), WIDTH)),
     CMD.sizeNormal,
     CMD.boldOff,
     line(rule()),
     line(''),
-    line('Entrega: ______________________'),
+    line('Entrega: ' + (corte.cashier || '_____________________')),
     line(''),
     line('Recibe:  ______________________'),
     CMD.alignCenter,

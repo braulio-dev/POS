@@ -57,6 +57,35 @@
   .status { padding: 8px 12px; border-radius: 4px; background: rgba(0,0,0,.07); font-size: 13px; }
   .hidden { display: none !important; }
   .stock-low { color: #a11b1b; font-weight: 800; }
+
+  /* Payment indicators. Colour alone would not survive a black-and-white print
+     or a colour-blind reader, so each badge carries its own word too. */
+  .pay {
+    display: inline-block; padding: 2px 8px; border: 2px solid var(--ink);
+    border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .5px;
+    white-space: nowrap;
+  }
+  .pay-cash  { background: #cfe8cf; }
+  .pay-card  { background: #cddcf2; }
+  .pay-mixed { background: #f2e2bd; }
+  /* The authorisation number, shown under the badge. It is the only thing the
+     owner can quote back to Clip when a charge is disputed. */
+  .pay-ref { display: block; margin-top: 3px; font-size: 11px; color: #6b6145; }
+
+  .totals {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .totals div {
+    padding: 8px 14px; background: #fdf7e0; border: 2px solid var(--ink); border-radius: 4px;
+  }
+  .totals span { display: block; font-size: 11px; font-weight: 800; letter-spacing: .5px; }
+  .totals strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .gone {
+    display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
+    background: #777; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .5px;
+  }
+  tr.inactive { opacity: .55; }
+  tr.inactive input { background: #f0ece0; }
   td.actions { white-space: nowrap; }
   @media (max-width: 700px) {
     th.hide-sm, td.hide-sm { display: none; }
@@ -98,7 +127,8 @@
         <input id="new-name" type="text" placeholder="Nombre del producto nuevo">
         <input id="new-price" type="number" step="0.01" min="0" placeholder="Precio" style="max-width:120px">
         <input id="new-stock" type="number" step="1" placeholder="Cant." style="max-width:100px">
-        <label class="row" style="gap:6px;white-space:nowrap" title="Desmarca para cosas a granel">
+        <label class="row" style="gap:6px;white-space:nowrap"
+               title="Marca lo que se cuenta por pieza. Desmárcalo para cosas a granel.">
           <input id="new-tracked" type="checkbox" checked> inventario
         </label>
         <button class="btn btn-go" id="add">AGREGAR</button>
@@ -111,7 +141,7 @@
             <th>Nombre</th>
             <th class="hide-sm" style="width:150px">Código</th>
             <th class="num" style="width:110px">Precio</th>
-            <th style="width:70px">Llevar</th>
+            <th style="width:86px" title="Marca los productos que se cuentan por pieza. Desmárcalo para cosas a granel (por kilo), que no tienen conteo.">Inventario</th>
             <th class="num" style="width:100px">Cant.</th>
             <th class="actions" style="width:200px">Acciones</th>
           </tr>
@@ -119,6 +149,12 @@
         <tbody id="products-body"></tbody>
       </table>
       <p class="muted">
+        <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza. Desmárcalo
+        para cosas a granel — frijol por kilo, bolsas sueltas — que no tienen conteo y
+        si no, saldrían siempre como AGOTADO en la caja.<br>
+        Los productos eliminados se quedan en gris al final de la lista con el botón
+        <strong>Restaurar</strong>: nunca se borran de verdad, porque las ventas viejas
+        siguen apuntando a ellos.<br>
         Los cambios llegan a la caja en el siguiente ciclo de sincronización.
         La cantidad sólo se envía si escribes un número nuevo — así una edición
         de precio nunca pisa el conteo que la caja lleva de las ventas del día.
@@ -126,8 +162,13 @@
     </section>
 
     <section id="view-sales" class="hidden">
+      <div id="sales-totals" class="totals"></div>
       <table>
-        <thead><tr><th>Fecha</th><th class="hide-sm">Caja</th><th class="num">Total</th><th>Artículos</th></tr></thead>
+        <thead><tr>
+          <th>Fecha</th><th class="hide-sm">Caja</th><th>Pago</th>
+          <th class="num">Total</th><th class="num hide-sm">Efectivo</th>
+          <th class="num hide-sm">Tarjeta</th><th>Artículos</th>
+        </tr></thead>
         <tbody id="sales-body"></tbody>
       </table>
     </section>
@@ -149,9 +190,18 @@
 
     <section id="view-cortes" class="hidden">
       <table>
-        <thead><tr><th>Fecha</th><th class="hide-sm">Caja</th><th class="num">Ventas</th><th class="num">Efectivo</th></tr></thead>
+        <thead><tr>
+          <th>Fecha</th><th class="hide-sm">Caja</th><th>Cajero</th>
+          <th class="num">Ventas</th><th class="num hide-sm">Vendido</th>
+          <th class="num hide-sm">Tarjeta</th><th class="num">Efectivo</th>
+        </tr></thead>
         <tbody id="cortes-body"></tbody>
       </table>
+      <p class="muted" style="margin-top:12px">
+        <strong>Efectivo</strong> es lo que se sacó físicamente de la caja.
+        <strong>Vendido</strong> incluye lo cobrado con terminal, que nunca entró
+        al cajón — por eso los dos números no coinciden en los días con tarjeta.
+      </p>
     </section>
   </main>
 </div>
@@ -197,7 +247,7 @@ function note(el, message, ms = 3000) {
 
 function productRow(p) {
   const tr = document.createElement('tr')
-  if (!p.active) tr.style.opacity = '.45'
+  if (!p.active) tr.className = 'inactive'
 
   // No src here on purpose. /images/:file needs the bearer header, and an <img>
   // tag cannot send one — pointing src straight at the route 401s and renders an
@@ -208,7 +258,10 @@ function productRow(p) {
 
   tr.innerHTML = `
     <td>${img}</td>
-    <td><input type="text" value="${escapeHtml(p.name)}" data-f="name"></td>
+    <td>
+      <input type="text" value="${escapeHtml(p.name)}" data-f="name">
+      ${p.active ? '' : '<span class="gone">eliminado</span>'}
+    </td>
     <td class="hide-sm"><input type="text" value="${escapeHtml(p.barcode || '')}" data-f="barcode"></td>
     <td class="num"><input type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" data-f="price"></td>
     <td style="text-align:center"><input type="checkbox" data-f="tracked" ${p.track_stock ? 'checked' : ''}></td>
@@ -216,7 +269,9 @@ function productRow(p) {
     <td class="actions">
       <button class="btn btn-go" data-a="save">Guardar</button>
       <button class="btn" data-a="photo">Foto</button>
-      <button class="btn btn-danger" data-a="del">×</button>
+      ${p.active
+        ? '<button class="btn btn-danger" data-a="del" title="Quitar del catálogo">×</button>'
+        : '<button class="btn btn-go" data-a="restore">Restaurar</button>'}
     </td>`
 
   const field = (name) => tr.querySelector(`[data-f="${name}"]`)
@@ -274,10 +329,36 @@ function productRow(p) {
     picker.click()
   }
 
-  tr.querySelector('[data-a="del"]').onclick = async () => {
-    if (!confirm(`¿Quitar "${p.name}" del catálogo?`)) return
+  // Soft delete: the product stays in the table so old sales still resolve, and
+  // Restaurar is just flipping `active` back.
+  const del = tr.querySelector('[data-a="del"]')
+  if (del) del.onclick = async () => {
+    if (!confirm(`¿Quitar "${p.name}" del catálogo?\n\nSe puede restaurar después.`)) return
     await api(`/api/products/${p.uuid}`, { method: 'DELETE' })
     loadProducts()
+  }
+
+  const restore = tr.querySelector('[data-a="restore"]')
+  if (restore) restore.onclick = async () => {
+    restore.disabled = true
+    try {
+      await api(`/api/products/${p.uuid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: field('name').value.trim(),
+          barcode: field('barcode').value.trim() || null,
+          priceCents: Math.round(Number(field('price').value) * 100),
+          trackStock: field('tracked').checked,
+          active: true,
+        }),
+      })
+      note($('products-status'), `${p.name} restaurado`)
+      loadProducts()
+    } catch (err) {
+      note($('products-status'), `Error: ${err.message}`, 6000)
+      restore.disabled = false
+    }
   }
 
   if (p.image_file) loadThumb(tr.querySelector('.thumb'), p.image_file)
@@ -318,17 +399,59 @@ async function loadProducts() {
   releaseThumbs()
   const body = $('products-body')
   body.replaceChildren(...products.map(productRow))
-  $('sync-note').textContent = `${products.filter((p) => p.active).length} productos`
+  const gone = products.filter((p) => !p.active).length
+  $('sync-note').textContent =
+    `${products.filter((p) => p.active).length} productos` + (gone ? ` · ${gone} eliminados` : '')
+}
+
+/**
+ * The payment badge for one sale.
+ *
+ * Reads the split rather than the stored label, so a row written by a register
+ * that predates the terminal (no split at all, therefore all cash) still gets
+ * the right badge instead of an empty cell.
+ */
+function payBadge(sale) {
+  const card = sale.card_cents ?? 0
+  const cash = sale.cash_cents ?? (sale.total_cents - card)
+
+  const kind = card <= 0 ? 'cash' : cash <= 0 ? 'card' : 'mixed'
+  const label = kind === 'cash' ? 'EFECTIVO' : kind === 'card' ? 'TARJETA' : 'MIXTO'
+
+  let html = `<span class="pay pay-${kind}">${label}</span>`
+  if (card > 0) {
+    const detail = [
+      sale.card_brand || null,
+      sale.card_last4 ? `••${sale.card_last4}` : null,
+      sale.terminal_reference ? `aut. ${sale.terminal_reference}` : null,
+    ].filter(Boolean).join(' · ')
+    if (detail) html += `<span class="pay-ref">${escapeHtml(detail)}</span>`
+  }
+  return html
 }
 
 async function loadSales() {
-  const { sales } = await api('/api/sales')
+  const { sales, totals } = await api('/api/sales')
+
+  $('sales-totals').innerHTML = `
+    <div><span>VENDIDO</span><strong>${money(totals.totalCents)}</strong></div>
+    <div><span>EFECTIVO</span><strong>${money(totals.cashCents)}</strong></div>
+    <div><span>TARJETA</span><strong>${money(totals.cardCents)}</strong></div>
+    <div><span>VENTAS CON TARJETA</span><strong>${totals.cardSales} de ${sales.length}</strong></div>`
+
   $('sales-body').replaceChildren(...sales.map((s) => {
     const tr = document.createElement('tr')
     const items = JSON.parse(s.items || '[]')
       .map((i) => `${i.qty}× ${i.name}`).join(', ')
+    const card = s.card_cents ?? 0
+    const cash = s.cash_cents ?? (s.total_cents - card)
+
     tr.innerHTML = `<td>${when(s.created_at)}</td><td class="hide-sm">${escapeHtml(s.store_id)}</td>
-                    <td class="num">${money(s.total_cents)}</td><td>${escapeHtml(items)}</td>`
+                    <td>${payBadge(s)}</td>
+                    <td class="num">${money(s.total_cents)}</td>
+                    <td class="num hide-sm">${cash > 0 ? money(cash) : '<span class="muted">—</span>'}</td>
+                    <td class="num hide-sm">${card > 0 ? money(card) : '<span class="muted">—</span>'}</td>
+                    <td>${escapeHtml(items)}</td>`
     return tr
   }))
 }
@@ -337,8 +460,15 @@ async function loadCortes() {
   const { cortes } = await api('/api/cortes')
   $('cortes-body').replaceChildren(...cortes.map((c) => {
     const tr = document.createElement('tr')
+    const card = c.card_cents ?? 0
+    const cash = c.cash_cents ?? c.total_cents
+
     tr.innerHTML = `<td>${when(c.created_at)}</td><td class="hide-sm">${escapeHtml(c.store_id)}</td>
-                    <td class="num">${c.sale_count}</td><td class="num">${money(c.total_cents)}</td>`
+                    <td>${c.cashier ? escapeHtml(c.cashier) : '<span class="muted">sin nombre</span>'}</td>
+                    <td class="num">${c.sale_count}</td>
+                    <td class="num hide-sm">${money(c.total_cents)}</td>
+                    <td class="num hide-sm">${card > 0 ? money(card) : '<span class="muted">—</span>'}</td>
+                    <td class="num"><strong>${money(cash)}</strong></td>`
     return tr
   }))
 }

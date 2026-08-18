@@ -119,11 +119,18 @@ db.exec(`
     created_at     TEXT    NOT NULL
   );
 
+  -- Mirrors electron/db.cjs. cash_cents + card_cents = total_cents, and the
+  -- method is derived from that split rather than stored as the truth, so a
+  -- report here can never disagree with the register about where money went.
+
   CREATE TABLE IF NOT EXISTS cortes (
     uuid        TEXT PRIMARY KEY,
     store_id    TEXT    NOT NULL,
     total_cents INTEGER NOT NULL,
     sale_count  INTEGER NOT NULL,
+    -- Name typed at the register when the cut was taken. Nullable: cuts pushed
+    -- by a till that predates the field arrive without one.
+    cashier     TEXT,
     opened_at   TEXT    NOT NULL,
     created_at  TEXT    NOT NULL
   );
@@ -159,6 +166,39 @@ const productCols = db.prepare('PRAGMA table_info(products)').all()
 if (!productCols.some((c) => c.name === 'track_stock')) {
   db.exec('ALTER TABLE products ADD COLUMN track_stock INTEGER NOT NULL DEFAULT 1')
 }
+
+// Servers that were already collecting cuts before the register asked who was
+// on the till keep their rows; the older ones simply have no name.
+const corteCols = db.prepare('PRAGMA table_info(cortes)').all()
+if (!corteCols.some((c) => c.name === 'cashier')) {
+  db.exec('ALTER TABLE cortes ADD COLUMN cashier TEXT')
+}
+
+/** SQLite has no ADD COLUMN IF NOT EXISTS, and dropping tables here loses history. */
+function addColumnIfMissing(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+  if (cols.some((c) => c.name === column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+}
+
+// The payment split, added when the card terminal arrived. Everything already
+// on this server predates the terminal and was therefore cash by definition, so
+// backfilling the full total as cash is exact rather than a guess — the same
+// reasoning as the register's own migration.
+addColumnIfMissing('sales', 'payment_method', "TEXT NOT NULL DEFAULT 'cash'")
+addColumnIfMissing('sales', 'cash_cents', 'INTEGER')
+addColumnIfMissing('sales', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
+addColumnIfMissing('sales', 'terminal_provider', 'TEXT')
+addColumnIfMissing('sales', 'terminal_reference', 'TEXT')
+addColumnIfMissing('sales', 'card_brand', 'TEXT')
+addColumnIfMissing('sales', 'card_last4', 'TEXT')
+db.exec('UPDATE sales SET cash_cents = total_cents WHERE cash_cents IS NULL')
+
+addColumnIfMissing('cortes', 'cash_cents', 'INTEGER')
+addColumnIfMissing('cortes', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
+db.exec('UPDATE cortes SET cash_cents = total_cents WHERE cash_cents IS NULL')
+
+db.exec('CREATE INDEX IF NOT EXISTS idx_sales_method ON sales(payment_method)')
 
 const now = () => new Date().toISOString()
 
@@ -228,24 +268,63 @@ function applyStock(payload, origin) {
   return true
 }
 
+/**
+ * Fills in the payment split for a sale pushed by an older register.
+ *
+ * A till that has not been updated yet sends no split at all. Its sales were
+ * all cash — that was the only way it could take money — so crediting the whole
+ * total to cash is correct, not a fallback that quietly distorts the reports.
+ */
+function paymentOf(payload) {
+  const total = Number(payload.totalCents) || 0
+  const card = Number(payload.cardCents) || 0
+  const cash = payload.cashCents === undefined || payload.cashCents === null
+    ? total - card
+    : Number(payload.cashCents)
+  return {
+    method: payload.paymentMethod || (card <= 0 ? 'cash' : cash <= 0 ? 'card' : 'mixed'),
+    cash,
+    card,
+    provider: payload.terminalProvider ?? null,
+    reference: payload.terminalReference ?? null,
+    brand: payload.cardBrand ?? null,
+    last4: payload.cardLast4 ?? null,
+  }
+}
+
 function applySale(payload, storeId) {
+  const pay = paymentOf(payload)
   db.prepare(
     `INSERT OR IGNORE INTO sales (uuid, store_id, total_cents, received_cents,
-                                  change_cents, items, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+                                  change_cents, payment_method, cash_cents, card_cents,
+                                  terminal_provider, terminal_reference, card_brand,
+                                  card_last4, items, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     payload.uuid, storeId, payload.totalCents, payload.receivedCents,
-    payload.changeCents, JSON.stringify(payload.items || []), payload.createdAt
+    payload.changeCents, pay.method, pay.cash, pay.card,
+    pay.provider, pay.reference, pay.brand, pay.last4,
+    JSON.stringify(payload.items || []), payload.createdAt
   )
   // Not logged as a change: sales only ever flow upward.
   return true
 }
 
 function applyCorte(payload, storeId) {
+  const total = Number(payload.totalCents) || 0
+  const card = Number(payload.cardCents) || 0
+  const cash = payload.cashCents === undefined || payload.cashCents === null
+    ? total - card
+    : Number(payload.cashCents)
+
   db.prepare(
-    `INSERT OR IGNORE INTO cortes (uuid, store_id, total_cents, sale_count, opened_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(payload.uuid, storeId, payload.totalCents, payload.saleCount, payload.openedAt, payload.createdAt)
+    `INSERT OR IGNORE INTO cortes (uuid, store_id, total_cents, cash_cents, card_cents,
+                                   sale_count, cashier, opened_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    payload.uuid, storeId, total, cash, card, payload.saleCount,
+    payload.cashier ?? null, payload.openedAt, payload.createdAt
+  )
   return true
 }
 
@@ -619,15 +698,23 @@ const server = http.createServer(async (req, res) => {
           ? existing.track_stock
           : (input.trackStock ? 1 : 0)
 
+        // `active` is how a deleted product comes back. Deleting is a soft
+        // delete — hard-deleting would orphan the line items in `sale_items`
+        // and rewrite history — so undoing it is just flipping this back to 1.
+        const active = input.active === undefined || input.active === null
+          ? existing.active
+          : (input.active ? 1 : 0)
+
         db.prepare(
           `UPDATE products SET barcode = ?, name = ?, price_cents = ?,
-                  track_stock = ?, updated_at = ? WHERE uuid = ?`
-        ).run(input.barcode || null, input.name, Number(input.priceCents) || 0, tracked, at, uuid)
+                  track_stock = ?, active = ?, updated_at = ? WHERE uuid = ?`
+        ).run(input.barcode || null, input.name, Number(input.priceCents) || 0,
+              tracked, active, at, uuid)
 
         logChange('product', uuid, {
           uuid, barcode: input.barcode || null, name: input.name,
           priceCents: Number(input.priceCents) || 0, imageFile: existing.image_file,
-          active: existing.active, trackStock: tracked, updatedAt: at,
+          active, trackStock: tracked, updatedAt: at,
         }, 'admin')
 
         // Stock only moves if the admin actually typed a new number — otherwise
@@ -679,9 +766,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (route === '/api/sales' && method === 'GET') {
-      return json(res, 200, {
-        sales: db.prepare('SELECT * FROM sales ORDER BY created_at DESC LIMIT 100').all(),
-      })
+      const sales = db.prepare('SELECT * FROM sales ORDER BY created_at DESC LIMIT 100').all()
+      // Totalled over the same 100 rows the table shows, so the figures at the
+      // top always add up to the rows underneath them. A lifetime total that
+      // disagrees with a visible list is the kind of thing that gets the whole
+      // screen mistrusted.
+      const totals = sales.reduce((acc, s) => ({
+        totalCents: acc.totalCents + s.total_cents,
+        cashCents: acc.cashCents + (s.cash_cents ?? s.total_cents),
+        cardCents: acc.cardCents + (s.card_cents ?? 0),
+        cardSales: acc.cardSales + ((s.card_cents ?? 0) > 0 ? 1 : 0),
+      }), { totalCents: 0, cashCents: 0, cardCents: 0, cardSales: 0 })
+
+      return json(res, 200, { sales, totals })
     }
 
     if (route === '/api/cortes' && method === 'GET') {

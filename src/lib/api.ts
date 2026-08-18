@@ -42,6 +42,12 @@ function createBrowserMock(): PosApi {
     storeName: 'Abarrotes "El Paisa"',
     corteThresholdCents: '200000',
     lowStockThreshold: '3',
+    terminalEnabled: '1',
+    terminalProvider: 'manual',
+    terminalAutoCharge: '0',
+    terminalApiUrl: '',
+    terminalApiKey: '',
+    terminalDeviceId: '',
     syncEnabled: '0',
     syncUrl: '',
     syncKey: '',
@@ -50,9 +56,14 @@ function createBrowserMock(): PosApi {
   }
 
   // The mock drawer accumulates so the corte banner can actually be seen in a
-  // browser without ringing up two thousand pesos of real sales.
+  // browser without ringing up two thousand pesos of real sales. It carries the
+  // same cash/card split as the real one, so a layout pass can actually see
+  // what a mixed period looks like instead of only the all-cash case.
   let drawerCents = 0
+  let drawerCashCents = 0
+  let drawerCardCents = 0
   let drawerSales = 0
+  let drawerCardSales = 0
   let openedAt = stamp
   const cortes: CorteRow[] = []
 
@@ -89,7 +100,10 @@ function createBrowserMock(): PosApi {
         if (p && p.track_stock) p.stock -= item.qty
       }
       drawerCents += sale.totalCents
+      drawerCashCents += sale.cashCents ?? sale.totalCents
+      drawerCardCents += sale.cardCents ?? 0
       drawerSales += 1
+      if ((sale.cardCents ?? 0) > 0) drawerCardSales += 1
       return { id: 0, uuid: 'mock', createdAt: new Date().toISOString() }
     },
     async pickImage() { return null },
@@ -117,30 +131,61 @@ function createBrowserMock(): PosApi {
       const thresholdCents = Number(settings.corteThresholdCents) || 0
       return {
         totalCents: drawerCents,
+        cashCents: drawerCashCents,
+        cardCents: drawerCardCents,
         saleCount: drawerSales,
+        cardSaleCount: drawerCardSales,
         openedAt,
         thresholdCents,
-        needsCorte: thresholdCents > 0 && drawerCents >= thresholdCents,
+        // Cash only, exactly like the real one in electron/db.cjs.
+        needsCorte: thresholdCents > 0 && drawerCashCents >= thresholdCents,
       }
     },
-    async recordCorte() {
+    async recordCorte(options) {
+      const cashier = String(options?.cashier ?? '').trim() || null
       const corte = {
         uuid: `mock-corte-${cortes.length + 1}`,
         createdAt: new Date().toISOString(),
         openedAt,
         totalCents: drawerCents,
+        cashCents: drawerCashCents,
+        cardCents: drawerCardCents,
         saleCount: drawerSales,
+        cashier,
       }
       cortes.unshift({
-        uuid: corte.uuid, total_cents: corte.totalCents, sale_count: corte.saleCount,
-        opened_at: corte.openedAt, created_at: corte.createdAt,
+        uuid: corte.uuid, total_cents: corte.totalCents,
+        cash_cents: corte.cashCents, card_cents: corte.cardCents,
+        sale_count: corte.saleCount,
+        cashier, opened_at: corte.openedAt, created_at: corte.createdAt,
       })
       drawerCents = 0
+      drawerCashCents = 0
+      drawerCardCents = 0
       drawerSales = 0
+      drawerCardSales = 0
       openedAt = corte.createdAt
       return { corte, printed: { ok: false, error: 'Sin impresora en el navegador' } }
     },
     async listCortes() { return [...cortes] },
+
+    /**
+     * The stand-in terminal is always in manual mode, which is the honest
+     * answer: there is no card reader attached to a browser tab. The payment
+     * screen therefore shows its manual capture fields, so the card and mixed
+     * layouts can be worked on without an Electron build or a real Clip.
+     */
+    async getTerminalStatus() {
+      return { provider: 'manual', ready: true, autoCharge: false, configured: false }
+    },
+    async terminalCharge() {
+      return { ok: false, fallback: 'manual' as const, reason: 'Sin terminal en el navegador' }
+    },
+    async terminalPoll() {
+      return { ok: false, status: 'pending' as const, final: false, reason: 'Sin terminal en el navegador' }
+    },
+    async terminalCancel() { return { ok: true, status: 'canceled' } },
+    async testTerminal() { return { ok: true, note: 'Captura manual: no necesita conexión' } },
 
     async getSettings() { return { ...settings } },
     async setSetting(key, value) {

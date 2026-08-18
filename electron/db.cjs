@@ -90,6 +90,10 @@ function openDatabase(dataDir) {
       uuid        TEXT    NOT NULL UNIQUE,
       total_cents INTEGER NOT NULL,
       sale_count  INTEGER NOT NULL,
+      -- Who handed the cash over. Typed at the register rather than taken from
+      -- a login: the till has no user accounts, and the owner needs a name on
+      -- the slip more than it needs an identity system.
+      cashier     TEXT,
       opened_at   TEXT    NOT NULL,
       created_at  TEXT    NOT NULL
     );
@@ -115,6 +119,12 @@ function openDatabase(dataDir) {
   `)
 
   migrateProducts()
+  migrateSales()
+  // Tills that predate the manual corte have cortes rows with no cashier at
+  // all; the column is nullable so those stay readable instead of inventing a
+  // name nobody typed.
+  addColumnIfMissing('cortes', 'cashier', 'TEXT')
+  migrateCortes()
   seedDefaults()
 
   return db
@@ -158,6 +168,68 @@ function migrateProducts() {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_products_uuid ON products(uuid)')
 }
 
+/**
+ * Sales gained a payment split once the card terminal arrived.
+ *
+ * Before this, `total_cents` doubled as "money in the drawer", which is only
+ * true while every sale is cash. The moment one sale is paid with a Clip, the
+ * corte claims cash that never physically arrived and the drawer will not
+ * reconcile at closing time.
+ *
+ * So the split is the source of truth and the method is derived from it:
+ *
+ *   cash_cents + card_cents === total_cents, always.
+ *
+ * There is deliberately no way to record "card" while still crediting the
+ * drawer — the two numbers are what the drawer and the reports both read, so
+ * they cannot disagree with each other.
+ *
+ *   payment_method      'cash' | 'card' | 'mixed'. A label, for display only.
+ *   cash_cents          stays in the drawer (total minus change, not the amount
+ *                       handed over).
+ *   card_cents          went through the terminal.
+ *   terminal_provider   which terminal took it ('manual', 'clip', ...).
+ *   terminal_reference  the authorisation number on the terminal's own slip.
+ *                       The only thing the store can take to Clip when a charge
+ *                       is disputed, which is why the payment screen insists on
+ *                       it before a card sale may close.
+ *   card_brand/last4    what the customer will recognise on their statement.
+ */
+function migrateSales() {
+  addColumnIfMissing('sales', 'payment_method', "TEXT NOT NULL DEFAULT 'cash'")
+  // Nullable so the backfill below can tell "not migrated yet" from "genuinely
+  // zero cash", which a card sale legitimately is.
+  addColumnIfMissing('sales', 'cash_cents', 'INTEGER')
+  addColumnIfMissing('sales', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('sales', 'terminal_provider', 'TEXT')
+  addColumnIfMissing('sales', 'terminal_reference', 'TEXT')
+  addColumnIfMissing('sales', 'card_brand', 'TEXT')
+  addColumnIfMissing('sales', 'card_last4', 'TEXT')
+
+  // Everything that predates the terminal was cash by definition: it is the
+  // only way the register could take money. Backfilling the full total is
+  // therefore exact, not a guess.
+  db.exec('UPDATE sales SET cash_cents = total_cents WHERE cash_cents IS NULL')
+
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sales_method ON sales(payment_method)')
+}
+
+/**
+ * Cortes gained the same split, for the same reason.
+ *
+ * `total_cents` keeps meaning "everything sold in the period" so old rows and
+ * old reports still read correctly. `cash_cents` is the new number that matters
+ * at the counter: it is what the cashier physically counts out and hands over.
+ */
+function migrateCortes() {
+  addColumnIfMissing('cortes', 'cash_cents', 'INTEGER')
+  addColumnIfMissing('cortes', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
+
+  // Cuts taken before the terminal existed were all cash, so their total is
+  // their cash — the same reasoning as the sales backfill above.
+  db.exec('UPDATE cortes SET cash_cents = total_cents WHERE cash_cents IS NULL')
+}
+
 function seedDefaults() {
   // INSERT OR IGNORE leaves the owner's choices alone on every later launch.
   const seed = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)')
@@ -169,6 +241,17 @@ function seedDefaults() {
   // "getting low" mark of 3 units. Both are editable in Configuracion.
   seed.run('corteThresholdCents', '200000')
   seed.run('lowStockThreshold', '3')
+
+  // Card terminal. Defaults to 'manual': the cashier charges on the terminal's
+  // own keypad and types the authorisation number back here. That needs no
+  // credentials and no internet, so it works from the first launch — see
+  // electron/terminal.cjs for why the cloud drivers are opt-in.
+  seed.run('terminalEnabled', '1')
+  seed.run('terminalProvider', 'manual')
+  seed.run('terminalAutoCharge', '0')
+  seed.run('terminalApiUrl', '')
+  seed.run('terminalApiKey', '')
+  seed.run('terminalDeviceId', '')
 
   seed.run('syncEnabled', '0')
   seed.run('syncUrl', '')
@@ -365,20 +448,96 @@ function setStockBulk(entries) {
 /* ------------------------------------------------------------------- sales */
 
 /**
+ * Settles the payment split for a sale before it is written.
+ *
+ * The renderer already validates the tender (src/lib/tender.ts), but this is
+ * the last gate before the numbers become permanent, and the invariant it
+ * enforces — cash + card === total — is the one thing the whole cash-drawer
+ * report rests on. Enforcing it here rather than trusting the caller means a
+ * future caller (the screenshot harness, a repair script, a second UI) cannot
+ * quietly write a sale that makes the corte wrong.
+ *
+ * A caller that says nothing about payment gets the historical behaviour: all
+ * cash. That is what every sale before the terminal existed actually was.
+ */
+function normalisePayment({
+  totalCents, receivedCents, changeCents, cashCents, cardCents, paymentMethod, terminal,
+}) {
+  const total = Math.trunc(Number(totalCents) || 0)
+  let card = Math.trunc(Number(cardCents) || 0)
+
+  // Clamp rather than reject. A sale is already rung up and the customer is
+  // standing there; refusing to record it would lose the money entirely, which
+  // is strictly worse than recording it with the split pulled back into range.
+  if (card < 0) card = 0
+  if (card > total) card = total
+
+  const cash = cashCents === undefined || cashCents === null
+    ? total - card
+    : Math.trunc(Number(cashCents) || 0)
+
+  // If the caller's own split does not add up, its card leg is the number we
+  // trust — that one is backed by an authorisation from the terminal, while the
+  // cash leg is only ever what someone typed.
+  const settledCash = cash + card === total ? cash : total - card
+
+  const method = card <= 0 ? 'cash' : settledCash <= 0 ? 'card' : 'mixed'
+
+  // Received/change only describe the cash leg. On a pure card sale no bills
+  // changed hands at all, so both are zero regardless of what was passed.
+  const received = method === 'card'
+    ? 0
+    : Math.trunc(Number(receivedCents) || 0) || settledCash
+  const change = method === 'card' ? 0 : Math.max(0, received - settledCash)
+
+  // `paymentMethod` from the caller is accepted but never trusted: the label is
+  // always re-derived from the split, so a mislabelled sale is impossible.
+  void paymentMethod
+
+  const t = terminal || null
+  return {
+    method,
+    cashCents: settledCash,
+    cardCents: card,
+    receivedCents: received,
+    changeCents: change,
+    terminalProvider: card > 0 ? (t && t.provider ? String(t.provider) : 'manual') : null,
+    terminalReference: card > 0 && t && t.reference ? String(t.reference).slice(0, 40) : null,
+    cardBrand: card > 0 && t && t.cardBrand ? String(t.cardBrand).slice(0, 20) : null,
+    cardLast4: card > 0 && t && t.cardLast4 ? String(t.cardLast4).slice(-4) : null,
+  }
+}
+
+/**
  * Records a completed sale. Sale, line items, stock decrements and outbox rows
  * all commit together, so the register can never end up with a sale that never
  * gets synced, or stock that drifts from the sales that caused it.
  */
-function recordSale({ items, totalCents, receivedCents, changeCents }) {
+function recordSale({
+  items, totalCents, receivedCents, changeCents,
+  cashCents, cardCents, paymentMethod, terminal,
+}) {
   const uuid = crypto.randomUUID()
   const createdAt = now()
+  const payment = normalisePayment({
+    totalCents, receivedCents, changeCents, cashCents, cardCents, paymentMethod, terminal,
+  })
 
   db.exec('BEGIN')
   try {
     const info = db.prepare(
-      `INSERT INTO sales (uuid, total_cents, received_cents, change_cents, created_at)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(uuid, totalCents, receivedCents, changeCents, createdAt)
+      `INSERT INTO sales (uuid, total_cents, received_cents, change_cents,
+                          payment_method, cash_cents, card_cents,
+                          terminal_provider, terminal_reference, card_brand, card_last4,
+                          created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      uuid, totalCents, payment.receivedCents, payment.changeCents,
+      payment.method, payment.cashCents, payment.cardCents,
+      payment.terminalProvider, payment.terminalReference,
+      payment.cardBrand, payment.cardLast4,
+      createdAt
+    )
     const saleId = info.lastInsertRowid
 
     const insertItem = db.prepare(
@@ -407,11 +566,21 @@ function recordSale({ items, totalCents, receivedCents, changeCents }) {
     }
 
     enqueue('sale', uuid, {
-      uuid, createdAt, totalCents, receivedCents, changeCents, items,
+      uuid, createdAt, totalCents,
+      receivedCents: payment.receivedCents,
+      changeCents: payment.changeCents,
+      paymentMethod: payment.method,
+      cashCents: payment.cashCents,
+      cardCents: payment.cardCents,
+      terminalProvider: payment.terminalProvider,
+      terminalReference: payment.terminalReference,
+      cardBrand: payment.cardBrand,
+      cardLast4: payment.cardLast4,
+      items,
     }, createdAt)
 
     db.exec('COMMIT')
-    return { id: Number(saleId), uuid, createdAt }
+    return { id: Number(saleId), uuid, createdAt, ...payment }
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
@@ -472,7 +641,10 @@ function enqueueFullSnapshot({ includeHistory = true } = {}) {
       }
 
       for (const sale of db.prepare(
-        'SELECT id, uuid, total_cents, received_cents, change_cents, created_at FROM sales'
+        `SELECT id, uuid, total_cents, received_cents, change_cents, payment_method,
+                cash_cents, card_cents, terminal_provider, terminal_reference,
+                card_brand, card_last4, created_at
+           FROM sales`
       ).all()) {
         enqueue('sale', sale.uuid, {
           uuid: sale.uuid,
@@ -480,18 +652,30 @@ function enqueueFullSnapshot({ includeHistory = true } = {}) {
           totalCents: sale.total_cents,
           receivedCents: sale.received_cents,
           changeCents: sale.change_cents,
+          paymentMethod: sale.payment_method,
+          cashCents: sale.cash_cents,
+          cardCents: sale.card_cents,
+          terminalProvider: sale.terminal_provider,
+          terminalReference: sale.terminal_reference,
+          cardBrand: sale.card_brand,
+          cardLast4: sale.card_last4,
           items: itemsBySale.get(sale.id) || [],
         }, sale.created_at)
         counts.sales++
       }
 
       for (const c of db.prepare(
-        'SELECT uuid, total_cents, sale_count, opened_at, created_at FROM cortes'
+        `SELECT uuid, total_cents, cash_cents, card_cents, sale_count, cashier,
+                opened_at, created_at
+           FROM cortes`
       ).all()) {
         enqueue('corte', c.uuid, {
           uuid: c.uuid,
           totalCents: c.total_cents,
+          cashCents: c.cash_cents,
+          cardCents: c.card_cents,
           saleCount: c.sale_count,
+          cashier: c.cashier ?? null,
           openedAt: c.opened_at,
           createdAt: c.created_at,
         }, c.created_at)
@@ -517,47 +701,80 @@ function currentPeriodStart() {
 }
 
 /**
- * What is in the drawer right now. Cash taken is the sale total, not the amount
- * handed over: the change went back out of the same drawer.
+ * What is in the drawer right now.
+ *
+ * Cash taken is the *cash leg* of each sale, not its total: money that went
+ * through the card terminal never entered this drawer and must not be counted
+ * as though it did. Nor is it the amount handed over — the change went back out
+ * of the same drawer.
+ *
+ * `totalCents` is still every peso sold in the period, because that is what the
+ * owner means by "how did we do today". The two are only equal in an all-cash
+ * period, and keeping them separate is exactly what stops the corte drifting.
  */
 function getCashDrawer() {
   const openedAt = currentPeriodStart()
   const row = db.prepare(
-    `SELECT COALESCE(SUM(total_cents), 0) AS totalCents, COUNT(*) AS saleCount
+    `SELECT COALESCE(SUM(total_cents), 0) AS totalCents,
+            COALESCE(SUM(cash_cents),  0) AS cashCents,
+            COALESCE(SUM(card_cents),  0) AS cardCents,
+            COUNT(*)                      AS saleCount,
+            COALESCE(SUM(CASE WHEN card_cents > 0 THEN 1 ELSE 0 END), 0) AS cardSaleCount
        FROM sales WHERE created_at > ?`
   ).get(openedAt)
 
   const raw = db.prepare('SELECT value FROM settings WHERE key = ?').get('corteThresholdCents')
   const thresholdCents = Number(raw ? raw.value : 0) || 0
-  const totalCents = Number(row.totalCents)
+  const cashCents = Number(row.cashCents)
 
   return {
-    totalCents,
+    totalCents: Number(row.totalCents),
+    cashCents,
+    cardCents: Number(row.cardCents),
     saleCount: Number(row.saleCount),
+    cardSaleCount: Number(row.cardSaleCount),
     openedAt,
     thresholdCents,
-    // A threshold of 0 disables the reminder entirely.
-    needsCorte: thresholdCents > 0 && totalCents >= thresholdCents,
+    // Measured against cash only. The reminder exists because a drawer full of
+    // bills is a theft risk worth walking to the back for; card takings sitting
+    // in a Clip account are not, and letting them trip the alarm would train
+    // the cashier to ignore it.
+    needsCorte: thresholdCents > 0 && cashCents >= thresholdCents,
   }
 }
 
-/** Closes the current cash period and starts a new one. */
-function recordCorte() {
+/**
+ * Closes the current cash period and starts a new one.
+ *
+ * `cashier` is whoever is handing the cash over. It is stored with the cut and
+ * pushed to the server so the owner can tell, months later, who closed which
+ * drawer. A blank name is kept as NULL rather than an empty string: "nobody
+ * typed one" and "someone typed nothing" should not look different upstream.
+ */
+function recordCorte({ cashier = null } = {}) {
   const drawer = getCashDrawer()
   const uuid = crypto.randomUUID()
   const createdAt = now()
+  const who = String(cashier ?? '').trim().slice(0, 60) || null
 
   db.exec('BEGIN')
   try {
     db.prepare(
-      `INSERT INTO cortes (uuid, total_cents, sale_count, opened_at, created_at)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(uuid, drawer.totalCents, drawer.saleCount, drawer.openedAt, createdAt)
+      `INSERT INTO cortes (uuid, total_cents, cash_cents, card_cents, sale_count,
+                           cashier, opened_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      uuid, drawer.totalCents, drawer.cashCents, drawer.cardCents,
+      drawer.saleCount, who, drawer.openedAt, createdAt
+    )
 
     enqueue('corte', uuid, {
       uuid,
       totalCents: drawer.totalCents,
+      cashCents: drawer.cashCents,
+      cardCents: drawer.cardCents,
       saleCount: drawer.saleCount,
+      cashier: who,
       openedAt: drawer.openedAt,
       createdAt,
     }, createdAt)
@@ -572,14 +789,18 @@ function recordCorte() {
     uuid,
     createdAt,
     totalCents: drawer.totalCents,
+    cashCents: drawer.cashCents,
+    cardCents: drawer.cardCents,
     saleCount: drawer.saleCount,
+    cashier: who,
     openedAt: drawer.openedAt,
   }
 }
 
 function listCortes(limit = 20) {
   return db.prepare(
-    `SELECT uuid, total_cents, sale_count, opened_at, created_at
+    `SELECT uuid, total_cents, cash_cents, card_cents, sale_count, cashier,
+            opened_at, created_at
        FROM cortes ORDER BY created_at DESC LIMIT ?`
   ).all(limit)
 }

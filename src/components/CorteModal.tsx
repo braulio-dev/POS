@@ -20,12 +20,19 @@ function shortTime(iso: string): string {
 export function CorteModal({ drawer, onDone, onCancel }: Props) {
   const [working, setWorking] = useState(false)
   const [print, setPrint] = useState(true)
+  const [cashier, setCashier] = useState('')
+
+  // Who was on the till is the one thing about a corte nobody can reconstruct
+  // afterwards: the amount and the period are in the database, the name only
+  // ever exists in the room. So the cut will not go through without it.
+  const named = cashier.trim().length > 0
 
   async function confirm() {
+    if (!named) return
     setWorking(true)
     // The cut commits to SQLite inside the main process before anything is
     // spooled, so an out-of-paper printer costs a slip, never the record.
-    const { corte, printed } = await pos.recordCorte({ print })
+    const { corte, printed } = await pos.recordCorte({ print, cashier: cashier.trim() })
     onDone(corte, printed)
   }
 
@@ -43,16 +50,53 @@ export function CorteModal({ drawer, onDone, onCancel }: Props) {
             <dt>VENTAS</dt>
             <dd>{drawer.saleCount}</dd>
           </div>
+
+          {/*
+            The card rows only appear when there were card sales. On an all-cash
+            day they would be two zeroes sitting above the number that matters,
+            which is noise on the one screen that has to be read quickly.
+          */}
+          {drawer.cardCents > 0 && (
+            <>
+              <div>
+                <dt>TOTAL VENDIDO</dt>
+                <dd>{formatMoney(drawer.totalCents)}</dd>
+              </div>
+              <div>
+                <dt>TARJETA ({drawer.cardSaleCount})</dt>
+                <dd>{formatMoney(drawer.cardCents)}</dd>
+              </div>
+            </>
+          )}
+
           <div className="corte-summary-total">
             <dt>EFECTIVO</dt>
-            <dd>{formatMoney(drawer.totalCents)}</dd>
+            <dd>{formatMoney(drawer.cashCents)}</dd>
           </div>
         </dl>
 
         <p className="muted-note">
-          Saca {formatMoney(drawer.totalCents)} de la caja. El contador vuelve a cero
+          Saca {formatMoney(drawer.cashCents)} de la caja. El contador vuelve a cero
           y empieza un periodo nuevo.
+          {drawer.cardCents > 0 && (
+            <>
+              {' '}Los {formatMoney(drawer.cardCents)} de la terminal no están en la
+              caja: ésos los deposita la terminal por su cuenta.
+            </>
+          )}
         </p>
+
+        <label className="corte-field">
+          <span>¿Quién entrega la caja?</span>
+          <input
+            className="text-input"
+            value={cashier}
+            onChange={(e) => setCashier(e.target.value)}
+            placeholder="Nombre del cajero"
+            maxLength={60}
+            autoFocus
+          />
+        </label>
 
         <label className="checkbox-field">
           <input type="checkbox" checked={print} onChange={(e) => setPrint(e.target.checked)} />
@@ -61,7 +105,7 @@ export function CorteModal({ drawer, onDone, onCancel }: Props) {
 
         <div className="modal-actions">
           <button className="btn-secondary" onClick={onCancel} disabled={working}>Cancelar</button>
-          <button className="btn-cobrar" onClick={confirm} disabled={working}>
+          <button className="btn-cobrar" onClick={confirm} disabled={working || !named}>
             {working ? 'GUARDANDO…' : 'CONFIRMAR CORTE'}
           </button>
         </div>

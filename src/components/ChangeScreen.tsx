@@ -1,14 +1,14 @@
 import { useEffect } from 'react'
 import { formatShort } from '../lib/money'
+import { methodLabel, terminalLabel, type Tender } from '../lib/tender'
 
 interface Props {
   totalCents: number
-  receivedCents: number
-  changeCents: number
+  tender: Tender
   onDismiss: () => void
 }
 
-export function ChangeScreen({ totalCents, receivedCents, changeCents, onDismiss }: Props) {
+export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
   // Any key or click clears it — the cashier is counting bills, not hunting for
   // a close button. No auto-dismiss timer: it stays until they say they're done.
   useEffect(() => {
@@ -17,10 +17,25 @@ export function ChangeScreen({ totalCents, receivedCents, changeCents, onDismiss
     return () => window.removeEventListener('keydown', handler)
   }, [onDismiss])
 
+  const paidByCard = tender.cardCents > 0
+
   return (
     <div className="change-screen" onClick={onDismiss}>
-      <h2 className="change-title">CAMBIO</h2>
-      <p className="change-value">{formatShort(changeCents)}</p>
+      {/*
+        A card sale has no change to give, and showing a giant "0" on the screen
+        the cashier reads at arm's length is how a customer gets waved off
+        without their change on the *next* sale. So the headline says what
+        actually happened instead.
+      */}
+      <h2 className="change-title">{tender.method === 'card' ? 'PAGADO CON TARJETA' : 'CAMBIO'}</h2>
+      {tender.method !== 'card' && <p className="change-value">{formatShort(tender.changeCents)}</p>}
+
+      {paidByCard && (
+        <p className="change-terminal">
+          {formatShort(tender.cardCents)} en la terminal
+          {terminalLabel(tender.terminal) ? ` · ${terminalLabel(tender.terminal)}` : ''}
+        </p>
+      )}
 
       <dl className="change-summary">
         <div>
@@ -28,9 +43,15 @@ export function ChangeScreen({ totalCents, receivedCents, changeCents, onDismiss
           <dd>{formatShort(totalCents)}</dd>
         </div>
         <div>
-          <dt>RECIBIDO</dt>
-          <dd>{formatShort(receivedCents)}</dd>
+          <dt>PAGO</dt>
+          <dd>{methodLabel(tender.method)}</dd>
         </div>
+        {tender.method !== 'card' && (
+          <div>
+            <dt>RECIBIDO</dt>
+            <dd>{formatShort(tender.receivedCents)}</dd>
+          </div>
+        )}
       </dl>
 
       <p className="change-hint">Toca la pantalla para continuar</p>

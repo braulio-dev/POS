@@ -120,7 +120,12 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
                 <tr>
                   <th>Producto</th>
                   <th className="num">Precio</th>
-                  <th className="tracked-col">Llevar</th>
+                  <th
+                    className="tracked-col"
+                    title="Marca lo que se cuenta por pieza. Desmárcalo para cosas a granel (por kilo)."
+                  >
+                    Inventario
+                  </th>
                   <th className="num">Cantidad</th>
                 </tr>
               </thead>
@@ -173,6 +178,12 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
             </table>
           )}
         </div>
+
+        <p className="muted-note">
+          <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza.
+          Desmárcalo para cosas a granel — frijol por kilo, bolsas — que no tienen
+          conteo y si no, saldrían siempre como AGOTADO.
+        </p>
 
         {status && <p className="settings-status">{status}</p>}
 

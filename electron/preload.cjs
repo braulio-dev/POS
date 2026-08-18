@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('pos', {
   setTrackStock: (id, tracked) => ipcRenderer.invoke('inventory:setTrackStock', id, tracked),
   setStockBulk: (entries) => ipcRenderer.invoke('inventory:setStockBulk', entries),
 
+  getTerminalStatus: () => ipcRenderer.invoke('terminal:status'),
+  terminalCharge: (input) => ipcRenderer.invoke('terminal:charge', input),
+  terminalPoll: (intentId) => ipcRenderer.invoke('terminal:poll', intentId),
+  terminalCancel: (intentId) => ipcRenderer.invoke('terminal:cancel', intentId),
+  testTerminal: (config) => ipcRenderer.invoke('terminal:test', config),
+
   getCashDrawer: () => ipcRenderer.invoke('cash:drawer'),
   recordCorte: (options) => ipcRenderer.invoke('cash:corte', options ?? {}),
   listCortes: (limit) => ipcRenderer.invoke('cash:listCortes', limit ?? 20),

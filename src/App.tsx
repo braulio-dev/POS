@@ -12,6 +12,7 @@ import { PasswordPrompt } from './components/PasswordPrompt'
 import { CorteBanner } from './components/CorteBanner'
 import { CorteModal } from './components/CorteModal'
 import { checkStock } from './lib/stock'
+import type { Tender } from './lib/tender'
 import { pos } from './lib/api'
 
 /** Screens that need the password before they will open. */
@@ -24,7 +25,7 @@ type Overlay =
   | { kind: 'inventory' }
   | { kind: 'corte' }
   | { kind: 'payment' }
-  | { kind: 'change'; totalCents: number; receivedCents: number; changeCents: number }
+  | { kind: 'change'; totalCents: number; tender: Tender }
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([])
@@ -120,16 +121,40 @@ export default function App() {
   // open the scanner should type into that modal's focused field instead.
   useBarcodeScanner(handleScan, overlay.kind === 'none')
 
-  async function completeSale(receivedCents: number, changeCents: number) {
-    const snapshot = { totalCents, receivedCents, changeCents }
+  /**
+   * Closes a sale.
+   *
+   * By the time this runs the tender has already been validated — including,
+   * on a card sale, that the terminal actually approved it and gave back an
+   * authorisation number. See src/lib/tender.ts for why that is a hard gate:
+   * money the register cannot prove arrived must never reach the books.
+   */
+  async function completeSale(tender: Tender) {
+    const snapshot = {
+      totalCents,
+      receivedCents: tender.receivedCents,
+      changeCents: tender.changeCents,
+      paymentMethod: tender.method,
+      cashCents: tender.cashCents,
+      cardCents: tender.cardCents,
+      terminal: tender.terminal,
+    }
     const items = lines
 
     // The sale is committed to SQLite first and the change screen goes up
     // immediately. Printing happens after, un-awaited, because a jammed or
     // unplugged printer must never hold up the counter or lose a recorded sale.
+    //
+    // TODO(you): the cash drawer opens off the back of this call, and only this
+    // call — see the full note at the `sales:record` handler in electron/ipc.cjs.
+    // It belongs in the main process rather than here: the servo is on a serial
+    // port, the renderer has no business touching one, and firing it from here
+    // would mean a sale that failed to commit could still pop the drawer.
+    // Two conditions, both load-bearing: after the insert has succeeded, and
+    // only when `tender.cashCents > 0` — a pure card sale has no change to give.
     const sale = await pos.recordSale({ items, ...snapshot })
     setLines([])
-    setOverlay({ kind: 'change', ...snapshot })
+    setOverlay({ kind: 'change', totalCents, tender })
 
     // Stock moved and the drawer grew; both are read back from SQLite rather
     // than guessed at here, so the badge and the corte banner agree with what
@@ -159,8 +184,7 @@ export default function App() {
     return (
       <ChangeScreen
         totalCents={overlay.totalCents}
-        receivedCents={overlay.receivedCents}
-        changeCents={overlay.changeCents}
+        tender={overlay.tender}
         onDismiss={() => setOverlay({ kind: 'none' })}
       />
     )
@@ -197,6 +221,12 @@ export default function App() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          {/* Always available, unlike the banner, which only appears once the
+              drawer crosses the threshold. Shift changes and errands do not
+              wait for a peso amount. */}
+          <button className="btn-corte footer-corte" onClick={() => setOverlay({ kind: 'corte' })}>
+            CORTE
+          </button>
         </div>
         <div className="footer-action">
           <button
@@ -250,8 +280,10 @@ export default function App() {
             setOverlay({ kind: 'none' })
             refreshDrawer()
             showToast(
+              // The cash figure, not the sales total: this is the number the
+              // cashier is about to count out of the drawer.
               printed.ok
-                ? `Corte hecho: ${(corte.totalCents / 100).toFixed(2)}`
+                ? `Corte hecho: ${(corte.cashCents / 100).toFixed(2)} en efectivo`
                 : 'Corte guardado (no se imprimió el comprobante)'
             )
           }}
@@ -261,6 +293,7 @@ export default function App() {
       {overlay.kind === 'payment' && (
         <PaymentModal
           totalCents={totalCents}
+          terminalEnabled={settings?.terminalEnabled === '1'}
           onConfirm={completeSale}
           onCancel={() => setOverlay({ kind: 'none' })}
         />

@@ -5,6 +5,7 @@ const crypto = require('node:crypto')
 const db = require('./db.cjs')
 const printer = require('./printer.cjs')
 const sync = require('./sync.cjs')
+const terminal = require('./terminal.cjs')
 
 /**
  * Every channel the renderer can reach, in one place. main.cjs and the
@@ -17,7 +18,64 @@ function registerIpc({ imageDir }) {
   ipcMain.handle('products:create', (_e, input) => db.createProduct(input))
   ipcMain.handle('products:update', (_e, id, input) => db.updateProduct(id, input))
   ipcMain.handle('products:deactivate', (_e, id) => db.deactivateProduct(id))
-  ipcMain.handle('sales:record', (_e, sale) => db.recordSale(sale))
+  /**
+   * The one point in the pipeline where a transaction becomes real.
+   *
+   * `db.recordSale` re-derives the payment split and commits sale, line items,
+   * stock and outbox in a single transaction. If it returns, the money is
+   * recorded; if it throws, nothing happened at all. That makes the line after
+   * it the only correct place to hang side effects that must not fire on a sale
+   * that did not complete — see the cash drawer TODO below.
+   */
+  ipcMain.handle('sales:record', (_e, sale) => {
+    const recorded = db.recordSale(sale)
+
+    // TODO(you): open the cash drawer here, and *only* here.
+    //
+    // The drawer is a servo on an Arduino (see the sketch the owner wrote: it
+    // sweeps pin 9 from 0° to 90° a degree at a time with a 20 ms delay, waits,
+    // then sweeps back). To drive it from here the sketch needs to stop running
+    // the sweep on a `loop()` timer and instead wait for a byte on the serial
+    // port — otherwise the drawer opens every three seconds forever, which is
+    // worse than not automating it at all. Roughly:
+    //
+    //     void loop() {
+    //       if (Serial.available() && Serial.read() == 'O') {
+    //         moverServoSuave(90);
+    //         delay(1500);
+    //         moverServoSuave(0);
+    //       }
+    //     }
+    //
+    // On this side that is one write to a COM port. `serialport` is the usual
+    // package; keep the port name in settings next to `printerName`, since it
+    // moves whenever the Arduino is replugged into a different USB socket.
+    //
+    // Two conditions, both of which matter:
+    //
+    //   1. ONLY after the sale has committed. Firing before this line means a
+    //      failed insert still opens the drawer, which is an open till with no
+    //      record of why — the exact hole a POS exists to close.
+    //
+    //   2. ONLY when cash actually changed hands: `recorded.cashCents > 0`.
+    //      A pure card sale needs no drawer, and popping it anyway trains the
+    //      cashier to leave it open, defeating the point. Mixed tenders DO need
+    //      it — there is change to give.
+    //
+    // Failure must be swallowed the way printing is: an unplugged Arduino costs
+    // the cashier a keypress to open the drawer by hand, never a recorded sale.
+    // Which means it cannot be awaited here, and its error cannot propagate.
+    //
+    //     if (recorded.cashCents > 0) {
+    //       drawer.pop().catch((err) => console.error('[drawer]', err.message))
+    //     }
+    //
+    // Worth deciding while wiring it: should a corte (cash:corte below) open the
+    // drawer too? The cashier is about to empty it, so probably yes — but that
+    // is a second call site, not a change to this one.
+
+    return recorded
+  })
 
   /* ------------------------------------------------------------ inventory */
 
@@ -34,8 +92,8 @@ function registerIpc({ imageDir }) {
   // Recording the corte and printing it are deliberately separate steps: the
   // cut is committed to SQLite first, so a printer that is out of paper costs
   // a slip of paper, never the record of the cash that was handed over.
-  ipcMain.handle('cash:corte', async (_e, { print = true } = {}) => {
-    const corte = db.recordCorte()
+  ipcMain.handle('cash:corte', async (_e, { print = true, cashier = null } = {}) => {
+    const corte = db.recordCorte({ cashier })
     const settings = db.getSettings()
 
     if (!print) return { corte, printed: { ok: true } }
@@ -46,6 +104,18 @@ function registerIpc({ imageDir }) {
       return { corte, printed: { ok: false, error: String(err.message ?? err) } }
     }
   })
+
+  /* -------------------------------------------------------------- terminal */
+
+  // Every one of these returns a result object rather than throwing. A card
+  // terminal that cannot be reached must degrade to "type the auth code by
+  // hand", never to an exception the payment screen has to catch mid-sale.
+
+  ipcMain.handle('terminal:status', () => terminal.status())
+  ipcMain.handle('terminal:charge', (_e, input) => terminal.charge(input))
+  ipcMain.handle('terminal:poll', (_e, intentId) => terminal.poll(intentId))
+  ipcMain.handle('terminal:cancel', (_e, intentId) => terminal.cancel(intentId))
+  ipcMain.handle('terminal:test', (_e, config) => terminal.testConnection(config))
 
   /* -------------------------------------------------------------- settings */
 

@@ -3,12 +3,13 @@ import type { CorteRow, MaintenanceStatus, Settings, SyncStatus } from '../types
 import { formatMoney, parseAmount } from '../lib/money'
 import { pos } from '../lib/api'
 
-type Tab = 'general' | 'impresora' | 'corte' | 'sync' | 'respaldos' | 'seguridad'
+type Tab = 'general' | 'impresora' | 'corte' | 'terminal' | 'sync' | 'respaldos' | 'seguridad'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'impresora', label: 'Impresora' },
   { id: 'corte', label: 'Corte' },
+  { id: 'terminal', label: 'Terminal' },
   { id: 'sync', label: 'Sincronización' },
   { id: 'respaldos', label: 'Respaldos' },
   { id: 'seguridad', label: 'Seguridad' },
@@ -110,6 +111,20 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
       url: settings.syncUrl, key: settings.syncKey, storeId: settings.syncStoreId,
     })
     setStatus(result.ok ? `Conectado con ${result.server}.` : `Error: ${result.error}`)
+    setTesting(false)
+  }
+
+  async function testTerminal() {
+    if (!settings) return
+    setTesting(true)
+    setStatus('Probando la terminal…')
+    const result = await pos.testTerminal({
+      provider: settings.terminalProvider,
+      apiUrl: settings.terminalApiUrl,
+      apiKey: settings.terminalApiKey,
+      deviceId: settings.terminalDeviceId,
+    })
+    setStatus(result.ok ? (result.note ?? 'La terminal respondió.') : `Error: ${result.error}`)
     setTesting(false)
   }
 
@@ -293,13 +308,111 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
                     {cortes.map((c) => (
                       <li key={c.uuid}>
                         <span>{when(c.created_at)}</span>
-                        <span className="muted-note">{c.sale_count} ventas</span>
-                        <strong>{formatMoney(c.total_cents)}</strong>
+                        <span className="muted-note">
+                          {c.sale_count} ventas
+                          {c.card_cents > 0 && ` · ${formatMoney(c.card_cents)} tarjeta`}
+                        </span>
+                        {/* The cash figure — what was actually handed over. */}
+                        <strong>{formatMoney(c.cash_cents)}</strong>
                       </li>
                     ))}
                   </ul>
                 )}
               </div>
+            </>
+          )}
+
+          {tab === 'terminal' && (
+            <>
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={settings.terminalEnabled === '1'}
+                  onChange={(e) => update('terminalEnabled', e.target.checked ? '1' : '0')}
+                />
+                <span>Aceptar pagos con tarjeta</span>
+              </label>
+              <p className="muted-note">
+                Apagado, la pantalla de cobro vuelve a pedir sólo efectivo. Las ventas
+                con tarjeta que ya se hicieron no se tocan.
+              </p>
+
+              <label className="field">
+                <span>TERMINAL</span>
+                <select
+                  className="text-input"
+                  value={settings.terminalProvider}
+                  onChange={(e) => update('terminalProvider', e.target.value)}
+                >
+                  <option value="manual">Captura manual (Clip u otra)</option>
+                  <option value="clip">Clip (conectada)</option>
+                  <option value="mercadopago">Mercado Pago Point (conectada)</option>
+                </select>
+                <span className="muted-note">
+                  Con <strong>captura manual</strong> el cajero cobra en la terminal y
+                  escribe aquí el número de autorización del comprobante. No necesita
+                  internet ni cuenta de integración, y funciona con cualquier terminal.
+                </span>
+              </label>
+
+              {settings.terminalProvider !== 'manual' && (
+                <>
+                  <label className="checkbox-field">
+                    <input
+                      type="checkbox"
+                      checked={settings.terminalAutoCharge === '1'}
+                      onChange={(e) => update('terminalAutoCharge', e.target.checked ? '1' : '0')}
+                    />
+                    <span>Mandar el monto a la terminal desde la caja</span>
+                  </label>
+                  <p className="muted-note">
+                    Enciéndelo sólo después de probar la conexión aquí abajo. Si la
+                    terminal no contesta, la caja vuelve sola a la captura manual: una
+                    venta nunca se pierde por esto.
+                  </p>
+
+                  <label className="field">
+                    <span>DIRECCIÓN DE LA API</span>
+                    <input
+                      className="text-input"
+                      placeholder="https://api.clip.mx"
+                      value={settings.terminalApiUrl}
+                      onChange={(e) => update('terminalApiUrl', e.target.value)}
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>LLAVE</span>
+                    <input
+                      className="text-input"
+                      type="password"
+                      value={settings.terminalApiKey}
+                      onChange={(e) => update('terminalApiKey', e.target.value)}
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>NÚMERO DE TERMINAL</span>
+                    <input
+                      className="text-input"
+                      placeholder="ID del aparato"
+                      value={settings.terminalDeviceId}
+                      onChange={(e) => update('terminalDeviceId', e.target.value)}
+                    />
+                  </label>
+
+                  <div className="modal-actions">
+                    <button className="btn-secondary" onClick={testTerminal} disabled={testing}>
+                      Probar terminal
+                    </button>
+                  </div>
+                  <p className="muted-note">
+                    La prueba manda un cobro de $1.00 y lo cancela enseguida: es la única
+                    forma de saber que la llave, el número de terminal y la red sirven
+                    juntos. Revisa que el aparato lo muestre y lo cancele.
+                  </p>
+                </>
+              )}
             </>
           )}
 

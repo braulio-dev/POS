@@ -29,7 +29,8 @@ quietly operate on `%APPDATA%/Electron` instead.
     electron/db.cjs        schema + queries (node:sqlite, no native build step)
     electron/sync.cjs      cloud sync worker: drains the outbox, pulls edits
     src/App.tsx            screen state machine: sale -> payment -> change
-    src/lib/tender.ts      cash validation policy  <- has an open TODO
+    electron/terminal.cjs  card terminal drivers (manual / Clip / Mercado Pago)
+    src/lib/tender.ts      payment + tender policy <- has an open TODO
     src/lib/stock.ts       out-of-stock policy     <- has an open TODO
     src/lib/money.ts       integer-cent maths and formatting
     electron/ipc.cjs       every renderer-reachable channel, shared with the harness
@@ -49,8 +50,38 @@ guards the Inventario screen, since changing what the shelf claims to hold is an
 owner action rather than a cashier one.
 
 Tabs: **General** (store name), **Impresora**, **Corte** (cash threshold and the
-low-stock mark), **Sincronización**, **Respaldos** (the server's backup list,
-with a "respaldar ahora" button), **Seguridad**.
+low-stock mark), **Terminal** (card payments), **Sincronización**, **Respaldos**
+(the server's backup list, with a "respaldar ahora" button), **Seguridad**.
+
+## Paying with a card terminal
+
+COBRAR offers three ways to pay: **EFECTIVO**, **TARJETA** and **MIXTO** (part
+cash, part card — what happens when a card is declined partway or the customer
+wants to break a large bill).
+
+The split is the source of truth, not the label: every sale stores `cash_cents`
+and `card_cents`, they must add up to the total, and the main process re-derives
+both the split and the method name before writing. There is deliberately no way
+to record a card sale that still credits the drawer.
+
+Two ways to drive the terminal, set in Configuración → Terminal:
+
+- **Captura manual** (the default). The cashier charges on the terminal's own
+  keypad and types the authorisation number from its slip back into the register.
+  No credentials, no internet, works with any terminal. A card sale will not
+  close without that number — it is the only thing the store can quote back to
+  Clip if a charge is disputed.
+- **Conectada**. The register pushes the amount to the terminal over the
+  vendor's API and polls until the customer has paid. Needs an integration
+  account, a device id and working internet. If the terminal cannot be reached
+  the screen drops back to manual capture on its own, so a sale is never lost to
+  a dead connection.
+
+The Mercado Pago Point driver follows their published device payment-intent
+flow. **The Clip driver follows the same shape but its routes have not been
+verified against a live device** — check them against the credentials Clip
+issues your store before turning "mandar el monto a la terminal" on. Manual
+capture needs none of this and is complete as shipped.
 
 ## Inventory
 
@@ -79,12 +110,19 @@ The policy lives in `src/lib/stock.ts`, and it is deliberately permissive:
 
 Once cash taken since the last corte passes the threshold (default $2,000,
 set it to 0 to switch the reminder off), a banner appears above the footer and
-stays until the cut is made. Cash counted is the sale total, not the amount
-handed over — the change came back out of the same drawer.
+stays until the cut is made.
 
-Taking a corte writes a row, prints a slip with the period it covers, and starts
-a new period. The cut commits to SQLite before anything is spooled, so an
-out-of-paper printer costs a slip and never the record.
+**Cash counted is the cash leg of each sale** — not the sale total, and not the
+amount handed over. Money that went through the card terminal never entered the
+drawer, and change came back out of it. The threshold is measured against cash
+only: card takings sitting in a Clip account are not a reason to walk to the
+back with a bag of money, and letting them trip the banner would train the
+cashier to ignore it.
+
+A corte therefore records three numbers — total sold, card, and cash — and the
+slip prints the cash figure as its headline, because that is what the cashier
+physically counts out. The cut commits to SQLite before anything is spooled, so
+an out-of-paper printer costs a slip and never the record.
 
 ## Where the data lives
 

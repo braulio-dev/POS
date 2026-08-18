@@ -229,7 +229,17 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-top: var(--border) solid var(--line);
 }
 
-.footer-search { padding: 12px 16px; }
+/* The search box and the manual corte button share the left half of the footer.
+   The button is pushed to the far end so it lands next to COBRAR but with the
+   divider between them -- close enough to find, far enough not to fat-finger. */
+.footer-search {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.footer-search .search-input { flex: 1 1 auto; min-width: 0; }
+.footer-corte { margin-left: auto; }
 .footer-action {
   padding: 12px 16px;
   border-left: var(--border) solid var(--line);
@@ -313,6 +323,69 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .payment-input { font-size: 20px; }
 .payment-cobrar { margin-top: 22px; min-width: 150px; }
+
+/* The total is stated at the top of the payment screen because the cashier is
+   about to compare it against what the customer handed over, and looking back
+   at the cart to check it is how the wrong amount gets rung up. */
+.payment-total {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--line);
+}
+.payment-total span { font-size: 13px; font-weight: 800; letter-spacing: 1px; }
+.payment-total strong { font-size: 30px; font-variant-numeric: tabular-nums; }
+
+/* Three targets big enough to hit without looking. Equal width so the one the
+   cashier wants is always in the same place, which is what makes it muscle
+   memory rather than a decision. */
+.payment-methods {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.payment-method {
+  display: grid;
+  gap: 2px;
+  padding: 10px 8px;
+  font: inherit;
+  text-align: center;
+  background: #ffffff;
+  border: 2px solid var(--line);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.payment-method[aria-pressed='true'] { background: var(--green); }
+.payment-method:disabled { opacity: 0.5; cursor: not-allowed; }
+.payment-method-label { font-size: 15px; font-weight: 800; letter-spacing: 0.5px; }
+.payment-method-hint { font-size: 11px; opacity: 0.75; }
+
+.payment-card {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 2px solid var(--line);
+  border-radius: 4px;
+}
+.payment-card-details {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.payment-terminal-push { display: grid; }
+
+.payment-note {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.85;
+}
 
 .product-modal {
   padding: 24px 28px;
@@ -400,6 +473,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .change-summary dt { letter-spacing: 1px; }
 .change-summary dd { margin: 0; font-variant-numeric: tabular-nums; }
 
+/* On a card sale this replaces the big change figure, so it carries the weight
+   of the line the cashier reads from across the counter. */
+.change-terminal {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
 .change-hint {
   margin-top: 40px;
   font-size: 14px;
@@ -429,6 +511,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
   font-weight: 600;
 }
 .checkbox-field input { width: 18px; height: 18px; }
+
+/* The cashier name on the corte modal: label above the box, not beside it, so
+   the field stays finger-sized on the counter's touch screen. */
+.corte-field {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 700;
+}
 
 .settings-status {
   margin: 0;
