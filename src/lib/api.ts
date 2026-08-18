@@ -161,6 +161,7 @@ function createBrowserMock(): PosApi {
 
     async getSyncStatus() { return { ...syncStatus } },
     async syncNow() { return { ok: false, error: 'Sin sincronización en el navegador' } },
+    async resendAll() { return { ok: false, error: 'Sin sincronización en el navegador' } },
     async testSync() { return { ok: false, error: 'Sin sincronización en el navegador' } },
     onSyncStatus() { return () => {} },
   }

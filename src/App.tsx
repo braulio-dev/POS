@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { CartLine, CashDrawer, NewProductInput, Product, Settings } from './types'
+import type { CartLine, CashDrawer, Product, Settings } from './types'
 import { useBarcodeScanner } from './hooks/useBarcodeScanner'
 import { Header } from './components/Header'
 import { ProductGrid } from './components/ProductGrid'
 import { Cart } from './components/Cart'
-import { AddProductModal } from './components/AddProductModal'
 import { PaymentModal } from './components/PaymentModal'
 import { ChangeScreen } from './components/ChangeScreen'
 import { SettingsModal } from './components/SettingsModal'
@@ -20,7 +19,6 @@ type Protected = 'settings' | 'inventory'
 
 type Overlay =
   | { kind: 'none' }
-  | { kind: 'addProduct' }
   | { kind: 'password'; then: Protected }
   | { kind: 'settings' }
   | { kind: 'inventory' }
@@ -122,13 +120,6 @@ export default function App() {
   // open the scanner should type into that modal's focused field instead.
   useBarcodeScanner(handleScan, overlay.kind === 'none')
 
-  async function saveProduct(input: NewProductInput) {
-    const created = await pos.createProduct(input)
-    setProducts((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
-    setOverlay({ kind: 'none' })
-    showToast(`${created.name} agregado`)
-  }
-
   async function completeSale(receivedCents: number, changeCents: number) {
     const snapshot = { totalCents, receivedCents, changeCents }
     const items = lines
@@ -188,7 +179,6 @@ export default function App() {
           products={visibleProducts}
           lowStockAt={lowStockAt}
           onSelect={addToCart}
-          onAdd={() => setOverlay({ kind: 'addProduct' })}
         />
         <Cart lines={lines} totalCents={totalCents} onRemove={removeOne} />
       </main>
@@ -218,10 +208,6 @@ export default function App() {
           </button>
         </div>
       </footer>
-
-      {overlay.kind === 'addProduct' && (
-        <AddProductModal onSave={saveProduct} onCancel={() => setOverlay({ kind: 'none' })} />
-      )}
 
       {overlay.kind === 'password' && (
         <PasswordPrompt

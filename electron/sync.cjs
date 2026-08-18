@@ -181,6 +181,16 @@ async function syncNow({ force = false } = {}) {
   running = true
   notify(status())
   try {
+    // First run against a server: offer everything this register already holds.
+    // A till that predates cloud sync has a full catalogue and an empty outbox,
+    // because nothing ever queued those rows. Without this the first sync
+    // reports "enviados 0" and the server stays empty no matter how long it runs.
+    if (!db.getSyncState().backfilled) {
+      const queued = db.enqueueFullSnapshot({ includeHistory: true })
+      db.setSyncState('backfilled', '1')
+      console.log('[sync] first run, queued existing data:', JSON.stringify(queued))
+    }
+
     const moved = await pushAndPull(cfg)
     const images = await reconcileImages(cfg)
 
@@ -224,6 +234,23 @@ function start(options) {
 function stop() {
   if (timer) clearInterval(timer)
   timer = null
+}
+
+/**
+ * Re-offers everything to the server, then syncs.
+ *
+ * The recovery path for "the server is missing things it should have" — a
+ * catalogue that predates sync, or a server restored from an older backup.
+ * Duplicates are harmless: every entity is keyed by uuid and upserted.
+ */
+async function resendAll() {
+  const cfg = config()
+  if (!cfg.url) return { ok: false, error: 'Falta la dirección del servidor' }
+
+  const queued = db.enqueueFullSnapshot({ includeHistory: true })
+  db.setSyncState('backfilled', '1')
+  const result = await syncNow({ force: true })
+  return { ...result, queued }
 }
 
 /**
@@ -276,5 +303,5 @@ async function testConnection({ url, key, storeId }) {
 
 module.exports = {
   start, stop, reschedule, syncNow, status, testConnection,
-  getMaintenance, runBackup,
+  getMaintenance, runBackup, resendAll,
 }

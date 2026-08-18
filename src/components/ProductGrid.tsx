@@ -6,15 +6,16 @@ interface Props {
   products: Product[]
   lowStockAt: number
   onSelect: (product: Product) => void
-  onAdd: () => void
 }
 
-export function ProductGrid({ products, lowStockAt, onSelect, onAdd }: Props) {
+export function ProductGrid({ products, lowStockAt, onSelect }: Props) {
   return (
     <section className="grid-pane">
       <div className="grid-scroll">
         {products.length === 0 ? (
-          <p className="empty-grid">Sin productos todavía. Usa el botón + para agregar uno.</p>
+          <p className="empty-grid">
+            Sin productos todavía. Agrégalos desde Inventario, en el ícono de arriba a la derecha.
+          </p>
         ) : (
           <div className="product-grid">
             {products.map((p) => {
@@ -48,10 +49,6 @@ export function ProductGrid({ products, lowStockAt, onSelect, onAdd }: Props) {
           </div>
         )}
       </div>
-
-      <button className="fab" onClick={onAdd} aria-label="Agregar producto" title="Agregar producto">
-        +
-      </button>
     </section>
   )
 }

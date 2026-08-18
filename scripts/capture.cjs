@@ -201,12 +201,50 @@ app.whenReady().then(async () => {
   `)
   await wait(400)
 
-  // 2. Add-product modal.
-  await win.webContents.executeJavaScript(`document.querySelector('.fab').click()`)
+  // 2. Add-product modal — now reached from inside Inventario, which is behind
+  //    the password, rather than from a button on the sale screen.
+  await win.webContents.executeJavaScript(`document.querySelector('.icon-btn-right').click()`)
   await wait(400)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const i = document.querySelector('.password-modal input[type=password]');
+      const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+      s.call(i, '1234'); i.dispatchEvent(new Event('input',{bubbles:true}));
+      [...document.querySelectorAll('.password-modal button')].find(b => b.textContent.includes('ENTRAR')).click();
+    })()
+  `)
+  await wait(800)
+  await win.webContents.executeJavaScript(`document.querySelector('.inventory-add').click()`)
+  await wait(500)
+
+  const addOpen = await win.webContents.executeJavaScript(
+    `Boolean(document.querySelector('.product-modal'))`
+  )
+  console.log(addOpen ? 'ADDPRODUCT PASS: reached from Inventario' : 'ADDPRODUCT FAIL')
+  const noFab = await win.webContents.executeJavaScript(`document.querySelector('.fab') === null`)
+  console.log(noFab ? 'ADDPRODUCT PASS: no + button left on the sale screen' : 'ADDPRODUCT FAIL: fab still present')
+
   await shoot(win, '2-add-product')
-  await win.webContents.executeJavaScript(`document.querySelector('.modal-backdrop').dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))`)
-  await wait(300)
+
+  // Dismissing the add dialog by its backdrop must not take Inventario with it.
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const backs = document.querySelectorAll('.modal-backdrop');
+      backs[backs.length - 1].dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));
+    })()
+  `)
+  await wait(400)
+  const survived = await win.webContents.executeJavaScript(`
+    Boolean(document.querySelector('.inventory-modal')) && document.querySelector('.product-modal') === null
+  `)
+  console.log(survived
+    ? 'ADDPRODUCT PASS: closing the add dialog leaves Inventario open'
+    : 'ADDPRODUCT FAIL: backdrop click closed Inventario too')
+  await wait(200)
+  await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.inventory-modal button')].find(b => b.textContent.includes('Cerrar')).click()
+  `)
+  await wait(400)
 
   // The payment flow commits a real sale row (and would spool a real ticket),
   // so it only runs against the throwaway database.

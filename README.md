@@ -57,7 +57,9 @@ with a "respaldar ahora" button), **Seguridad**.
 Every product carries a `stock` count. Sales decrement it inside the same
 transaction that records the sale, so the two can never disagree. The box icon
 in the header opens the physical-count screen: retype quantities, and GUARDAR
-writes them all in one transaction.
+writes them all in one transaction. New products are created there too, behind
+the same password — setting a price is an owner decision, not a cashier one, so
+the sale screen has no add button.
 
 The policy lives in `src/lib/stock.ts`, and it is deliberately permissive:
 
@@ -93,6 +95,13 @@ and settings all live there, and a sale never depends on the network.
 The `outbox` table records every change in the same transaction that makes it.
 `electron/sync.cjs` drains it whenever the server is reachable and applies
 whatever came back. See `server/README.md` for the server side and the protocol.
+
+"Enviados 0" after a sync normally means everything is already up to date —
+only changes since the last run are sent. The exception is a register that was
+already running before sync existed: its catalogue was never queued, so the
+first sync backfills the whole thing automatically. **Reenviar todo** in
+Configuración → Sincronización forces that by hand if the server is ever missing
+something.
 
 The server backs itself up on a timer (every 5 minutes out of the box) and can
 purge history past a retention window. Both are visible from Configuración →

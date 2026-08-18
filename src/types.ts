@@ -163,6 +163,11 @@ export interface PosApi {
 
   getSyncStatus(): Promise<SyncStatus>
   syncNow(): Promise<{ ok: boolean; error?: string; pushed?: number; applied?: number; uploaded?: number; downloaded?: number }>
+  /** Re-queues the whole catalogue and history, then syncs. */
+  resendAll(): Promise<{
+    ok: boolean; error?: string; pushed?: number; applied?: number
+    queued?: { products: number; stock: number; sales: number; cortes: number }
+  }>
   testSync(config: { url: string; key: string; storeId: string }): Promise<{ ok: boolean; error?: string; server?: string }>
   /** Subscribes to worker updates; returns its own unsubscribe function. */
   onSyncStatus(callback: (status: SyncStatus) => void): () => void

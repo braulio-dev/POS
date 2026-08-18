@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Product } from '../types'
+import type { NewProductInput, Product } from '../types'
 import { formatMoney } from '../lib/money'
 import { stockLevel } from '../lib/stock'
 import { pos } from '../lib/api'
+import { AddProductModal } from './AddProductModal'
 
 interface Props {
   lowStockAt: number
@@ -23,6 +24,7 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
   const [draft, setDraft] = useState<Record<number, string>>({})
   const [search, setSearch] = useState('')
   const [saving, setSaving] = useState(false)
+  const [adding, setAdding] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
 
   useEffect(() => { pos.listInventory().then(setProducts) }, [])
@@ -60,6 +62,21 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
     setValue(product.id, String(current + delta))
   }
 
+  /**
+   * Creating a product lives here rather than on the sale screen: it sets a
+   * price, and a price is an owner decision. Everything behind this modal is
+   * already past the password prompt.
+   *
+   * Errors are deliberately left to propagate — AddProductModal catches them and
+   * shows "ese código de barras ya existe" against the right field.
+   */
+  async function saveProduct(input: NewProductInput) {
+    const created = await pos.createProduct(input)
+    setProducts(await pos.listInventory())
+    setAdding(false)
+    setStatus(`${created.name} agregado`)
+  }
+
   async function save() {
     if (pending.length === 0) return onClose(false)
     setSaving(true)
@@ -71,16 +88,26 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
   }
 
   return (
+    // A fragment, not a wrapper: AddProductModal must be a sibling of this
+    // backdrop rather than a child of it. Nested inside, a mousedown on the add
+    // dialog's own backdrop would bubble up to this one and close Inventario
+    // out from under it.
+    <>
     <div className="modal-backdrop" onMouseDown={() => onClose(pending.length === 0 ? false : true)}>
       <div className="modal inventory-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h2 className="modal-title">Inventario</h2>
 
-        <input
-          className="text-input"
-          placeholder="Buscar producto"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        <div className="inventory-toolbar">
+          <input
+            className="text-input"
+            placeholder="Buscar producto"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button className="btn-secondary inventory-add" onClick={() => setAdding(true)}>
+            + NUEVO PRODUCTO
+          </button>
+        </div>
 
         <div className="inventory-scroll">
           {products === null ? (
@@ -162,5 +189,10 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
         </div>
       </div>
     </div>
+
+    {adding && (
+      <AddProductModal onSave={saveProduct} onCancel={() => setAdding(false)} />
+    )}
+    </>
   )
 }

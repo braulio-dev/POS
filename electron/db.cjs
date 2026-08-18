@@ -418,6 +418,96 @@ function recordSale({ items, totalCents, receivedCents, changeCents }) {
   }
 }
 
+/**
+ * Queues everything this register currently holds.
+ *
+ * The outbox only ever gains rows when something *happens* — a product is
+ * created, a sale is rung up, a count is corrected. A till that was already
+ * running before cloud sync existed therefore has a full catalogue and a
+ * completely empty outbox, so its first sync pushes nothing and the server
+ * stays empty forever. Migration backfills each product's uuid so it *can*
+ * sync; this is what actually offers it.
+ *
+ * Safe to run more than once: every entity is keyed by uuid, so the server
+ * upserts duplicates and ignores sales it already has.
+ */
+function enqueueFullSnapshot({ includeHistory = true } = {}) {
+  const at = now()
+  const counts = { products: 0, stock: 0, sales: 0, cortes: 0 }
+
+  db.exec('BEGIN')
+  try {
+    for (const row of db.prepare(`SELECT ${PRODUCT_COLUMNS} FROM products WHERE active = 1`).all()) {
+      enqueue('product', row.uuid, productPayload(row, false), at)
+      counts.products++
+
+      // Goods sold loose have no unit count worth sending.
+      if (row.track_stock) {
+        enqueue('stock', row.uuid, {
+          uuid: row.uuid,
+          stock: row.stock,
+          // Its own timestamp, not now(): if the server already holds a newer
+          // count, last-write-wins should keep the server's rather than let a
+          // resend stamp today's date on yesterday's number.
+          updatedAt: row.stock_updated_at || at,
+        }, at)
+        counts.stock++
+      }
+    }
+
+    if (includeHistory) {
+      // Line items fetched in one pass and grouped in memory; a query per sale
+      // would be thousands of round trips on a till with a year of history.
+      const itemsBySale = new Map()
+      for (const it of db.prepare(
+        'SELECT sale_id, product_id, name, unit_price_cents, qty FROM sale_items'
+      ).all()) {
+        if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, [])
+        itemsBySale.get(it.sale_id).push({
+          productId: it.product_id,
+          name: it.name,
+          unitPriceCents: it.unit_price_cents,
+          qty: it.qty,
+        })
+      }
+
+      for (const sale of db.prepare(
+        'SELECT id, uuid, total_cents, received_cents, change_cents, created_at FROM sales'
+      ).all()) {
+        enqueue('sale', sale.uuid, {
+          uuid: sale.uuid,
+          createdAt: sale.created_at,
+          totalCents: sale.total_cents,
+          receivedCents: sale.received_cents,
+          changeCents: sale.change_cents,
+          items: itemsBySale.get(sale.id) || [],
+        }, sale.created_at)
+        counts.sales++
+      }
+
+      for (const c of db.prepare(
+        'SELECT uuid, total_cents, sale_count, opened_at, created_at FROM cortes'
+      ).all()) {
+        enqueue('corte', c.uuid, {
+          uuid: c.uuid,
+          totalCents: c.total_cents,
+          saleCount: c.sale_count,
+          openedAt: c.opened_at,
+          createdAt: c.created_at,
+        }, c.created_at)
+        counts.cortes++
+      }
+    }
+
+    db.exec('COMMIT')
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+
+  return counts
+}
+
 /* ------------------------------------------------------------------ cortes */
 
 /** ISO timestamp the current cash period began: the last corte, or the epoch. */
@@ -676,6 +766,7 @@ module.exports = {
   setTrackStock,
   setStockBulk,
   recordSale,
+  enqueueFullSnapshot,
   getCashDrawer,
   recordCorte,
   listCortes,

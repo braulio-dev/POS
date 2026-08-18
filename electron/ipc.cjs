@@ -92,6 +92,7 @@ function registerIpc({ imageDir }) {
 
   ipcMain.handle('sync:status', () => sync.status())
   ipcMain.handle('sync:now', () => sync.syncNow({ force: true }))
+  ipcMain.handle('sync:resendAll', () => sync.resendAll())
   ipcMain.handle('sync:test', (_e, config) => sync.testConnection(config))
   ipcMain.handle('sync:maintenance', () => sync.getMaintenance())
   ipcMain.handle('sync:backup', () => sync.runBackup())

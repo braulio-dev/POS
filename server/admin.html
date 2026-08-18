@@ -199,8 +199,11 @@ function productRow(p) {
   const tr = document.createElement('tr')
   if (!p.active) tr.style.opacity = '.45'
 
+  // No src here on purpose. /images/:file needs the bearer header, and an <img>
+  // tag cannot send one — pointing src straight at the route 401s and renders an
+  // empty box. loadThumb() fetches the bytes and swaps in an object URL below.
   const img = p.image_file
-    ? `<img class="thumb" src="/images/${encodeURIComponent(p.image_file)}" alt="">`
+    ? '<img class="thumb" alt="">'
     : '<div class="thumb-empty">sin foto</div>'
 
   tr.innerHTML = `
@@ -277,7 +280,32 @@ function productRow(p) {
     loadProducts()
   }
 
+  if (p.image_file) loadThumb(tr.querySelector('.thumb'), p.image_file)
+
   return tr
+}
+
+// Object URLs are revoked when the list reloads; without that, every refresh
+// leaks a blob for each product until the tab is closed.
+let thumbUrls = []
+function releaseThumbs() {
+  for (const url of thumbUrls) URL.revokeObjectURL(url)
+  thumbUrls = []
+}
+
+async function loadThumb(el, filename) {
+  if (!el) return
+  try {
+    const res = await fetch(`/images/${encodeURIComponent(filename)}`, {
+      headers: { Authorization: `Bearer ${KEY}` },
+    })
+    if (!res.ok) return
+    const url = URL.createObjectURL(await res.blob())
+    thumbUrls.push(url)
+    el.src = url
+  } catch {
+    // A missing photo is cosmetic; the row still has to render.
+  }
 }
 
 function escapeHtml(s) {
@@ -287,6 +315,7 @@ function escapeHtml(s) {
 
 async function loadProducts() {
   const { products } = await api('/api/products')
+  releaseThumbs()
   const body = $('products-body')
   body.replaceChildren(...products.map(productRow))
   $('sync-note').textContent = `${products.filter((p) => p.active).length} productos`

@@ -126,6 +126,19 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
     setTesting(false)
   }
 
+  async function resendAll() {
+    setTesting(true)
+    setStatus('Reenviando todo…')
+    const result = await pos.resendAll()
+    setStatus(
+      result.ok
+        ? `Reenviado: ${result.queued?.products ?? 0} productos, ${result.queued?.sales ?? 0} ventas, ${result.queued?.cortes ?? 0} cortes.`
+        : `Error: ${result.error}`
+    )
+    setSync(await pos.getSyncStatus())
+    setTesting(false)
+  }
+
   async function loadMaintenance() {
     const result = await pos.getMaintenance()
     if (result.ok && result.status) {
@@ -356,6 +369,12 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
               )}
 
               <p className="muted-note">
+                <strong>Enviados 0</strong> normalmente quiere decir que ya está todo al día:
+                sólo se manda lo que cambió desde la última vez. Si al servidor le faltan
+                productos o ventas, usa <strong>Reenviar todo</strong>.
+              </p>
+
+              <p className="muted-note">
                 Las ventas se guardan siempre en esta computadora, con o sin internet.
                 La sincronización sólo las copia al servidor y trae los cambios que
                 hagas desde otro lado (precios, productos nuevos, fotos).
@@ -364,6 +383,7 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={testSync} disabled={testing}>Probar conexión</button>
                 <button className="btn-secondary" onClick={syncNow} disabled={testing}>Sincronizar ahora</button>
+                <button className="btn-secondary" onClick={resendAll} disabled={testing}>Reenviar todo</button>
               </div>
             </>
           )}

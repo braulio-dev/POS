@@ -149,25 +149,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: #7a6f45;
 }
 
-/* Floating add-product button, bottom-right of the grid area. */
-.fab {
-  position: absolute;
-  right: 18px;
-  bottom: 18px;
-  width: 60px;
-  height: 60px;
-  display: grid;
-  place-items: center;
-  font-size: 34px;
-  line-height: 1;
-  padding-bottom: 4px;
-  background: #ffffff;
-  border: 3px solid var(--line);
-  border-radius: 50%;
-  box-shadow: 0 3px 0 var(--line);
-}
-.fab:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--line); }
-
 /* ---------- Cart ---------- */
 
 .cart-pane {
@@ -815,3 +796,20 @@ select.text-input { appearance: auto; }
   min-width: 0;
 }
 .backup-list strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ---------- Inventory toolbar ---------- */
+
+.inventory-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.inventory-toolbar .text-input { flex: 1 1 auto; min-width: 0; }
+
+/* Creating a product sets a price, so it lives behind the same password as the
+   rest of Inventario rather than on the sale screen. */
+.inventory-add {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 14px;
+}

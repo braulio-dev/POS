@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('pos', {
 
   getSyncStatus: () => ipcRenderer.invoke('sync:status'),
   syncNow: () => ipcRenderer.invoke('sync:now'),
+  resendAll: () => ipcRenderer.invoke('sync:resendAll'),
   testSync: (config) => ipcRenderer.invoke('sync:test', config),
   getMaintenance: () => ipcRenderer.invoke('sync:maintenance'),
   runBackup: () => ipcRenderer.invoke('sync:backup'),
