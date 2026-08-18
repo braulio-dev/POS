@@ -67,15 +67,22 @@ to record a card sale that still credits the drawer.
 Two ways to drive the terminal, set in Configuración → Terminal:
 
 - **Captura manual** (the default). The cashier charges on the terminal's own
-  keypad and types the authorisation number from its slip back into the register.
-  No credentials, no internet, works with any terminal. A card sale will not
-  close without that number — it is the only thing the store can quote back to
-  Clip if a charge is disputed.
+  keypad, watches it approve, and presses COBRAR. That is the whole flow — the
+  register asks for nothing else. TARJETA has no fields at all; MIXTO has two
+  amounts and nothing more. No credentials, no internet, works with any terminal.
+
+  Nothing is typed here because there is nothing the register could honestly
+  verify: it never spoke to the terminal, so an authorisation number retyped off
+  a slip would be an unchecked string costing keystrokes at the counter with a
+  customer waiting. The amount is the one fact it actually knows, and the amount
+  is what the corte needs.
 - **Conectada**. The register pushes the amount to the terminal over the
-  vendor's API and polls until the customer has paid. Needs an integration
-  account, a device id and working internet. If the terminal cannot be reached
-  the screen drops back to manual capture on its own, so a sale is never lost to
-  a dead connection.
+  vendor's API and polls until the customer has paid. The reference, card brand
+  and last four come back on their own — still nothing typed, which is the point
+  of connecting it. Only here is approval a real fact, so only here will the
+  screen hold the sale until the terminal answers. Needs an integration account,
+  a device id and working internet; if the terminal cannot be reached the screen
+  drops back to manual on its own, so a sale is never lost to a dead connection.
 
 The Mercado Pago Point driver follows their published device payment-intent
 flow. **The Clip driver follows the same shape but its routes have not been

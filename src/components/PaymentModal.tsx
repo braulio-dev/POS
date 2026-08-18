@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { formatMoney, parseAmount } from '../lib/money'
 import {
-  emptyDraft, validateTender, type PaymentDraft, type PaymentMethod, type Tender,
+  emptyDraft, terminalLabel, validateTender,
+  type PaymentDraft, type PaymentMethod, type Tender,
 } from '../lib/tender'
 import type { TerminalState } from '../types'
 import { pos } from '../lib/api'
@@ -20,8 +21,6 @@ const METHODS: { id: PaymentMethod; label: string; hint: string }[] = [
   { id: 'mixed', label: 'MIXTO', hint: 'Una parte de cada uno' },
 ]
 
-const BRANDS = ['VISA', 'MASTERCARD', 'AMEX', 'OTRA']
-
 /** How often a pushed charge is re-checked while the customer is paying. */
 const POLL_MS = 2000
 
@@ -36,25 +35,33 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
 
   const cashRef = useRef<HTMLInputElement>(null)
   const cardAmountRef = useRef<HTMLInputElement>(null)
-  const authRef = useRef<HTMLInputElement>(null)
 
   const { method, terminal } = draft
 
   useEffect(() => { pos.getTerminalStatus().then(setTerminalState) }, [])
 
-  // Pushing the amount to the terminal is only possible when it is configured
-  // for it; otherwise every card sale is captured by hand off the printed slip.
+  // Whether the register drives the terminal itself. This is the single switch
+  // the whole screen turns on: pushed charges have a real approval to wait for,
+  // manual ones have nothing to ask the cashier for beyond the amount.
   const autoCharge = Boolean(terminalState?.autoCharge)
+
+  // The draft is created before the terminal state has loaded, so a pushed
+  // setup has to re-arm it once we know. Without this a card sale on a
+  // connected terminal would start out already "approved".
+  useEffect(() => {
+    if (autoCharge) setDraft((prev) => ({ ...prev, terminal: { ...prev.terminal, status: 'pending' } }))
+  }, [autoCharge])
 
   /* ------------------------------------------------------------- focus */
 
   // The cashier's hands are on the keyboard, not the mouse. Focus whichever
   // field this method actually starts with, so they can type straight away.
+  // TARJETA on a manual terminal has no field at all — the amount is the total
+  // and there is nothing left to say, so Enter alone closes the sale.
   useEffect(() => {
     if (method === 'cash') cashRef.current?.focus()
     else if (method === 'mixed') cardAmountRef.current?.focus()
-    else if (!autoCharge) authRef.current?.focus()
-  }, [method, autoCharge])
+  }, [method])
 
   const patch = useCallback((changes: Partial<PaymentDraft>) => {
     setDraft((prev) => ({ ...prev, ...changes }))
@@ -103,7 +110,12 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
 
     if (!started.ok || !started.intentId) {
       setCharging(false)
-      setChargeNote(`${started.reason ?? 'No se pudo usar la terminal'} — captura los datos a mano`)
+      // The terminal could not be driven, so this becomes an ordinary manual
+      // charge: the cashier uses its keypad as always. Marking it approved is
+      // what stops a dead connection from blocking a sale that is physically
+      // happening — the same rule the rest of the register follows.
+      patchTerminal({ provider: 'manual', status: 'approved', intentId: null })
+      setChargeNote(`${started.reason ?? 'No se pudo usar la terminal'} — cóbralo en la terminal`)
       return
     }
 
@@ -145,11 +157,18 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
     return () => { live = false; window.clearInterval(id) }
   }, [charging, terminal.intentId, patchTerminal])
 
+  /**
+   * Gives up on a pushed charge and falls back to the keypad.
+   *
+   * The intent is cancelled first so the terminal stops waiting on a customer
+   * who is now being charged by hand — otherwise the next tap could land on the
+   * abandoned intent and take the money twice.
+   */
   async function abandonCharge() {
     if (terminal.intentId) await pos.terminalCancel(terminal.intentId)
     setCharging(false)
-    setChargeNote('Cobro cancelado — puedes capturarlo a mano')
-    patchTerminal({ status: 'pending', intentId: null })
+    setChargeNote('Cóbralo en la terminal y presiona COBRAR')
+    patchTerminal({ provider: 'manual', status: 'approved', intentId: null })
   }
 
   /* ---------------------------------------------------------------- submit */
@@ -178,11 +197,18 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
   function chooseMethod(next: PaymentMethod) {
     if (charging) return
     setChargeNote(null)
-    setDraft((prev) => ({ ...emptyDraft(), method: next, receivedRaw: prev.receivedRaw }))
+    setDraft((prev) => ({
+      ...emptyDraft(terminalState?.provider ?? 'manual', autoCharge),
+      method: next,
+      receivedRaw: prev.receivedRaw,
+    }))
     setError(null)
   }
 
-  const needsCard = cardCents > 0
+  // Keyed off the chosen method, NOT off `cardCents > 0`: on a mixed tender the
+  // amount starts empty, so a card block gated on the amount would hide the very
+  // field the cashier needs in order to enter one.
+  const needsCard = method === 'card' || method === 'mixed'
   const approved = terminal.status === 'approved'
 
   /**
@@ -213,7 +239,10 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
    */
   function requestCancel() {
     if (charging) return
-    if (approved && cardCents > 0) {
+    // Only a charge this register pushed can be stranded. A manual one was
+    // never "held" here — if the cashier backs out, they void it on the
+    // terminal exactly as they would have before the register existed.
+    if (approved && cardCents > 0 && terminal.intentId) {
       const sure = window.confirm(
         `La terminal ya aprobó ${formatMoney(cardCents)}. Si sales ahora, ese cobro ` +
         `queda hecho pero sin venta registrada. ¿Salir de todos modos?`
@@ -270,7 +299,13 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
               </div>
             )}
 
-            {autoCharge ? (
+            {/*
+              A pushed charge is the only case with anything to operate. The
+              cashier sends the amount and waits; the reference, brand and last
+              four come back on their own. Nothing here is typed, which is the
+              entire reason to connect a terminal rather than use its keypad.
+            */}
+            {autoCharge && cardCents > 0 && (
               <div className="payment-terminal-push">
                 {!approved && !charging && (
                   <button type="button" className="btn-secondary" onClick={startCharge}>
@@ -282,65 +317,25 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
                     CANCELAR COBRO
                   </button>
                 )}
+                {approved && terminalLabel(terminal) && (
+                  <p className="payment-note">{terminalLabel(terminal)}</p>
+                )}
               </div>
-            ) : null}
+            )}
 
             {/*
-              Manual capture. Always present — even in push mode — because a
-              terminal that times out, or a charge the cashier ran on its keypad
-              while the register was thinking, still has to be recordable.
-              Filling in the authorisation number IS the approval: it is printed
-              on the terminal's slip and cannot be invented from this screen.
+              On a manual terminal there is nothing to show and nothing to ask.
+              The cashier charged it on the keypad and watched it approve; the
+              amount is the only fact the register can honestly claim to know,
+              and it already has that. Asking for an authorisation number here
+              would be retyping a slip nobody reads, at the counter, with a
+              customer waiting.
             */}
-            <div className="payment-row">
-              <label className="payment-label" htmlFor="auth">AUTORIZACIÓN</label>
-              <input
-                id="auth"
-                ref={authRef}
-                className="text-input payment-input"
-                placeholder="Nº DEL COMPROBANTE"
-                value={terminal.reference ?? ''}
-                onChange={(e) => {
-                  const reference = e.target.value
-                  patchTerminal({
-                    reference,
-                    // Typing the code off the slip is the cashier asserting the
-                    // terminal approved it. Clearing it withdraws that.
-                    status: reference.trim() ? 'approved' : 'pending',
-                  })
-                }}
-                onKeyDown={onKey}
-              />
-            </div>
-
-            <div className="payment-card-details">
-              <label className="field">
-                <span>MARCA</span>
-                <select
-                  className="text-input"
-                  value={terminal.cardBrand ?? ''}
-                  onChange={(e) => patchTerminal({ cardBrand: e.target.value || null })}
-                >
-                  <option value="">—</option>
-                  {BRANDS.map((b) => <option key={b} value={b}>{b}</option>)}
-                </select>
-              </label>
-
-              <label className="field">
-                <span>ÚLTIMOS 4</span>
-                <input
-                  className="text-input"
-                  placeholder="0000"
-                  inputMode="numeric"
-                  maxLength={4}
-                  value={terminal.cardLast4 ?? ''}
-                  onChange={(e) =>
-                    patchTerminal({ cardLast4: e.target.value.replace(/\D/g, '').slice(0, 4) || null })
-                  }
-                  onKeyDown={onKey}
-                />
-              </label>
-            </div>
+            {!autoCharge && cardCents > 0 && (
+              <p className="payment-note">
+                Cobra {formatMoney(cardCents)} en la terminal y presiona COBRAR.
+              </p>
+            )}
 
             {chargeNote && <p className="payment-note">{chargeNote}</p>}
           </div>

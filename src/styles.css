@@ -373,11 +373,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border: 2px solid var(--line);
   border-radius: 4px;
 }
-.payment-card-details {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
 .payment-terminal-push { display: grid; }
 
 .payment-note {
