@@ -1,0 +1,41 @@
+# Caddy fetches and renews the certificate itself; there is no certbot cron to
+# forget about. {$POS_DOMAIN} comes from .env via docker-compose.yml.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$POS_DOMAIN} {
+	# Product photos are uploaded whole, so the default 10MB body cap is too low.
+	request_body {
+		max_size 30MB
+	}
+
+	encode gzip
+
+	# The register holds a bearer token, so refuse to speak anything but modern
+	# TLS. Caddy already redirects :80 to :443 on its own.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	reverse_proxy pos-sync:8787 {
+		# A slow photo upload from home over domestic broadband must not be cut
+		# off mid-flight.
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 10MB
+			roll_keep 5
+		}
+	}
+}

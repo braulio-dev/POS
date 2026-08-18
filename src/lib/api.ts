@@ -1,0 +1,170 @@
+import type {
+  CorteRow, NewProductInput, PosApi, Product, Settings, StockEntry, SyncStatus,
+} from '../types'
+
+/**
+ * In Electron, `window.pos` is injected by the preload bridge and every call
+ * hits real SQLite. Opening the Vite dev server in a plain browser has no such
+ * bridge, so we fall back to an in-memory stand-in. That makes UI work fast to
+ * iterate on — but nothing persists, which is exactly what you want for a
+ * scratch layout pass and never what you want at the counter.
+ */
+function createBrowserMock(): PosApi {
+  let nextId = 5
+  const stamp = new Date().toISOString()
+
+  const product = (
+    id: number, barcode: string | null, name: string, price: number,
+    stock: number, trackStock = 1
+  ): Product => ({
+    id,
+    uuid: `mock-${id}`,
+    barcode,
+    name,
+    price_cents: price,
+    image_file: null,
+    stock,
+    track_stock: trackStock,
+    updated_at: stamp,
+    stock_updated_at: stamp,
+  })
+
+  const products: Product[] = [
+    product(1, '7501000111', 'Papas', 5600, 12),
+    product(2, '7501000222', 'Tortillas', 3000, 2),
+    product(3, '7501000333', 'Cereal', 7000, 0),
+    product(4, null, 'Frijol Kg', 3900, 0, 0),
+  ]
+
+  const settings: Settings = {
+    printerName: 'POS58 Printer',
+    autoPrint: '1',
+    storeName: 'Abarrotes "El Paisa"',
+    corteThresholdCents: '200000',
+    lowStockThreshold: '3',
+    syncEnabled: '0',
+    syncUrl: '',
+    syncKey: '',
+    syncStoreId: 'principal',
+    syncIntervalSec: '60',
+  }
+
+  // The mock drawer accumulates so the corte banner can actually be seen in a
+  // browser without ringing up two thousand pesos of real sales.
+  let drawerCents = 0
+  let drawerSales = 0
+  let openedAt = stamp
+  const cortes: CorteRow[] = []
+
+  const syncStatus: SyncStatus = {
+    enabled: false, configured: false, pending: 0,
+    lastSyncAt: null, lastError: null, cursor: null, running: false,
+  }
+
+  return {
+    async listProducts() { return [...products] },
+    async findByBarcode(barcode) { return products.find((p) => p.barcode === barcode) ?? null },
+    async createProduct(input: NewProductInput) {
+      const created = product(
+        nextId, input.barcode, input.name, input.priceCents,
+        input.stock ?? 0, input.trackStock === false ? 0 : 1
+      )
+      created.image_file = input.imageFile
+      nextId++
+      products.push(created)
+      return created
+    },
+    async updateProduct(id, input) {
+      const i = products.findIndex((p) => p.id === id)
+      products[i] = { ...products[i], name: input.name, price_cents: input.priceCents }
+      return products[i]
+    },
+    async deactivateProduct(id) {
+      const i = products.findIndex((p) => p.id === id)
+      if (i >= 0) products.splice(i, 1)
+    },
+    async recordSale(sale) {
+      for (const item of sale.items) {
+        const p = products.find((x) => x.id === item.productId)
+        if (p && p.track_stock) p.stock -= item.qty
+      }
+      drawerCents += sale.totalCents
+      drawerSales += 1
+      return { id: 0, uuid: 'mock', createdAt: new Date().toISOString() }
+    },
+    async pickImage() { return null },
+
+    async listInventory() { return [...products] },
+    async setStock(id, stock) {
+      const p = products.find((x) => x.id === id)!
+      p.stock = Math.trunc(stock)
+      return p
+    },
+    async setTrackStock(id, tracked) {
+      const p = products.find((x) => x.id === id)!
+      p.track_stock = tracked ? 1 : 0
+      return p
+    },
+    async setStockBulk(entries: StockEntry[]) {
+      for (const e of entries) {
+        const p = products.find((x) => x.id === e.id)
+        if (p) p.stock = Math.trunc(e.stock)
+      }
+      return [...products]
+    },
+
+    async getCashDrawer() {
+      const thresholdCents = Number(settings.corteThresholdCents) || 0
+      return {
+        totalCents: drawerCents,
+        saleCount: drawerSales,
+        openedAt,
+        thresholdCents,
+        needsCorte: thresholdCents > 0 && drawerCents >= thresholdCents,
+      }
+    },
+    async recordCorte() {
+      const corte = {
+        uuid: `mock-corte-${cortes.length + 1}`,
+        createdAt: new Date().toISOString(),
+        openedAt,
+        totalCents: drawerCents,
+        saleCount: drawerSales,
+      }
+      cortes.unshift({
+        uuid: corte.uuid, total_cents: corte.totalCents, sale_count: corte.saleCount,
+        opened_at: corte.openedAt, created_at: corte.createdAt,
+      })
+      drawerCents = 0
+      drawerSales = 0
+      openedAt = corte.createdAt
+      return { corte, printed: { ok: false, error: 'Sin impresora en el navegador' } }
+    },
+    async listCortes() { return [...cortes] },
+
+    async getSettings() { return { ...settings } },
+    async setSetting(key, value) {
+      settings[key] = value
+      return { ...settings }
+    },
+    // The browser stand-in accepts the shipped default so the settings screen
+    // is reachable during layout work.
+    async verifyPassword(password) { return password === '1234' },
+    async setPassword() { return { ok: false, error: 'Sin base de datos en el navegador' } },
+
+    async listPrinters() { return ['POS58 Printer'] },
+    async testPrinter() { return { ok: false, error: 'Sin impresora en el navegador' } },
+    async printReceipt() { return { ok: false, error: 'Sin impresora en el navegador' } },
+
+    async getMaintenance() { return { ok: false, error: 'Sin servidor en el navegador' } },
+    async runBackup() { return { ok: false, error: 'Sin servidor en el navegador' } },
+
+    async getSyncStatus() { return { ...syncStatus } },
+    async syncNow() { return { ok: false, error: 'Sin sincronización en el navegador' } },
+    async testSync() { return { ok: false, error: 'Sin sincronización en el navegador' } },
+    onSyncStatus() { return () => {} },
+  }
+}
+
+export const pos: PosApi = window.pos ?? createBrowserMock()
+export const isElectron = Boolean(window.pos)

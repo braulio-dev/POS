@@ -1,0 +1,66 @@
+# Sync server + Caddy for TLS.
+#
+#   cp .env.example .env     # then edit it — POS_SYNC_KEY and POS_DOMAIN
+#   docker compose up -d
+#
+# Caddy gets a certificate from Let's Encrypt on first boot and renews it on its
+# own, so there is no certbot timer to forget about.
+
+services:
+  pos-sync:
+    build: .
+    # Survives crashes and reboots, but stays down if you deliberately stop it.
+    restart: unless-stopped
+    environment:
+      POS_SYNC_KEY: ${POS_SYNC_KEY:?POS_SYNC_KEY is required - copy .env.example to .env}
+      PORT: 8787
+      POS_DATA_DIR: /data
+
+      # Every 5 minutes for now; change to 1d when the shop has been running a
+      # while. Units: s, m, h, d.
+      POS_BACKUP_ENABLED: ${POS_BACKUP_ENABLED:-1}
+      POS_BACKUP_INTERVAL: ${POS_BACKUP_INTERVAL:-5m}
+      POS_BACKUP_KEEP: ${POS_BACKUP_KEEP:-48}
+
+      # Off until you decide how much history to keep. This deletes permanently.
+      POS_PURGE_ENABLED: ${POS_PURGE_ENABLED:-0}
+      POS_PURGE_INTERVAL: ${POS_PURGE_INTERVAL:-1d}
+      POS_PURGE_DAYS: ${POS_PURGE_DAYS:-365}
+      POS_PURGE_CHANGES_DAYS: ${POS_PURGE_CHANGES_DAYS:-30}
+      POS_STALE_STORE_DAYS: ${POS_STALE_STORE_DAYS:-30}
+    volumes:
+      - pos-data:/data
+    # Deliberately no `ports:` — nothing reaches this container except through
+    # Caddy. The key is a bearer token; exposing 8787 in the clear would hand it
+    # to anyone on the path.
+    expose:
+      - "8787"
+    networks: [pos]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      POS_DOMAIN: ${POS_DOMAIN:?POS_DOMAIN is required - the hostname Caddy gets a certificate for}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates persist here. Lose this volume and every restart asks
+      # Let's Encrypt for a fresh certificate, which will hit their rate limit.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - pos-sync
+    networks: [pos]
+
+volumes:
+  pos-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  pos:

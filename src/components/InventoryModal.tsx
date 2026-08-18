@@ -1,0 +1,166 @@
+import { useEffect, useMemo, useState } from 'react'
+import type { Product } from '../types'
+import { formatMoney } from '../lib/money'
+import { stockLevel } from '../lib/stock'
+import { pos } from '../lib/api'
+
+interface Props {
+  lowStockAt: number
+  onClose: (changed: boolean) => void
+}
+
+/**
+ * Physical-count screen: every product, one editable quantity each.
+ *
+ * Edits are held locally and written in a single bulk transaction on GUARDAR,
+ * rather than saved per keystroke. Counting a shelf means typing over numbers
+ * repeatedly, and a per-keystroke save would push a sync message for every
+ * intermediate value — including the empty string between deleting "12" and
+ * typing "15".
+ */
+export function InventoryModal({ lowStockAt, onClose }: Props) {
+  const [products, setProducts] = useState<Product[] | null>(null)
+  const [draft, setDraft] = useState<Record<number, string>>({})
+  const [search, setSearch] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+
+  useEffect(() => { pos.listInventory().then(setProducts) }, [])
+
+  const visible = useMemo(() => {
+    if (!products) return []
+    const q = search.trim().toLowerCase()
+    if (!q) return products
+    return products.filter(
+      (p) => p.name.toLowerCase().includes(q) || (p.barcode ?? '').includes(q)
+    )
+  }, [products, search])
+
+  // Only rows the user actually retyped are sent, so opening this screen and
+  // closing it again never restamps every product's stock timestamp.
+  const pending = useMemo(() => {
+    if (!products) return []
+    return products
+      .filter((p) => {
+        const typed = draft[p.id]
+        return typed !== undefined && typed !== '' && Number(typed) !== p.stock
+      })
+      .map((p) => ({ id: p.id, stock: Number(draft[p.id]) }))
+  }, [products, draft])
+
+  function setValue(id: number, value: string) {
+    setDraft((prev) => ({ ...prev, [id]: value }))
+    setStatus(null)
+  }
+
+  function bump(product: Product, delta: number) {
+    const current = draft[product.id] !== undefined && draft[product.id] !== ''
+      ? Number(draft[product.id])
+      : product.stock
+    setValue(product.id, String(current + delta))
+  }
+
+  async function save() {
+    if (pending.length === 0) return onClose(false)
+    setSaving(true)
+    const updated = await pos.setStockBulk(pending)
+    setProducts(updated)
+    setDraft({})
+    setSaving(false)
+    setStatus(`${pending.length} ${pending.length === 1 ? 'producto' : 'productos'} actualizados`)
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={() => onClose(pending.length === 0 ? false : true)}>
+      <div className="modal inventory-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <h2 className="modal-title">Inventario</h2>
+
+        <input
+          className="text-input"
+          placeholder="Buscar producto"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+
+        <div className="inventory-scroll">
+          {products === null ? (
+            <p className="muted-note">Cargando…</p>
+          ) : visible.length === 0 ? (
+            <p className="muted-note">Sin productos que coincidan.</p>
+          ) : (
+            <table className="inventory-table">
+              <thead>
+                <tr>
+                  <th>Producto</th>
+                  <th className="num">Precio</th>
+                  <th className="tracked-col">Llevar</th>
+                  <th className="num">Cantidad</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((p) => {
+                  const value = draft[p.id] !== undefined ? draft[p.id] : String(p.stock)
+                  const level = stockLevel({ ...p, stock: Number(value) || 0 }, lowStockAt)
+                  const tracked = Boolean(p.track_stock)
+                  return (
+                    <tr key={p.id} className={draft[p.id] !== undefined ? 'row-dirty' : undefined}>
+                      <td className="inventory-name" title={p.name}>
+                        {p.name}
+                        {/* Negative stock is the recount flag: more went out the
+                            door than the books ever had in. */}
+                        {level === 'over' && <span className="recount-flag">recontar</span>}
+                      </td>
+                      <td className="num">{formatMoney(p.price_cents)}</td>
+                      <td className="tracked-col">
+                        {/* Off for goods sold by weight, so they stop reporting
+                            AGOTADO forever and drowning the real warnings. */}
+                        <input
+                          type="checkbox"
+                          checked={tracked}
+                          aria-label={`Llevar inventario de ${p.name}`}
+                          onChange={async (e) => {
+                            await pos.setTrackStock(p.id, e.target.checked)
+                            setProducts(await pos.listInventory())
+                          }}
+                        />
+                      </td>
+                      <td className="num">
+                        <div className="qty-editor">
+                          <button className="qty-btn" onClick={() => bump(p, -1)} disabled={!tracked} aria-label="Quitar uno">−</button>
+                          <input
+                            className={`text-input qty-input stock-${level}`}
+                            type="number"
+                            step="1"
+                            value={tracked ? value : ''}
+                            placeholder={tracked ? undefined : 'granel'}
+                            disabled={!tracked}
+                            onChange={(e) => setValue(p.id, e.target.value)}
+                          />
+                          <button className="qty-btn" onClick={() => bump(p, 1)} disabled={!tracked} aria-label="Agregar uno">+</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {status && <p className="settings-status">{status}</p>}
+
+        <div className="modal-actions">
+          <span className="inventory-pending muted-note">
+            {pending.length > 0
+              ? `${pending.length} sin guardar`
+              : 'Sin cambios'}
+          </span>
+          <button className="btn-secondary" onClick={() => onClose(false)} disabled={saving}>Cerrar</button>
+          <button className="btn-cobrar" onClick={save} disabled={saving || pending.length === 0}>
+            {saving ? 'GUARDANDO…' : 'GUARDAR'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

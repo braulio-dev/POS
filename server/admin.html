@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventario — El Paisa</title>
+<style>
+  :root {
+    --red: #b65a57; --cream: #ede0ac; --green: #22b14c; --ink: #111;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+    color: var(--ink); background: var(--cream);
+  }
+  header {
+    background: var(--red); border-bottom: 3px solid var(--ink);
+    padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 22px; }
+  header .spacer { flex: 1 1 auto; }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab {
+    padding: 8px 16px; font: inherit; font-weight: 700; background: #fff;
+    border: 2px solid var(--ink); border-radius: 4px; cursor: pointer;
+  }
+  .tab[aria-selected="true"] { background: var(--green); }
+  table { width: 100%; border-collapse: collapse; background: #fdf7e0; }
+  th, td { padding: 8px 10px; border: 2px solid var(--ink); text-align: left; vertical-align: middle; }
+  th { background: var(--red); font-size: 13px; letter-spacing: .5px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  input, button, select { font: inherit; }
+  input[type=text], input[type=number], input[type=password] {
+    width: 100%; padding: 6px 8px; border: 2px solid var(--ink); border-radius: 4px; background: #fff;
+  }
+  .btn {
+    padding: 8px 14px; font-weight: 700; background: #fff;
+    border: 2px solid var(--ink); border-radius: 4px; cursor: pointer;
+  }
+  .btn-go { background: var(--green); }
+  .btn-danger { background: #e88; }
+  .thumb {
+    width: 52px; height: 40px; object-fit: cover; display: block;
+    border: 2px solid var(--ink); border-radius: 3px; background: #fff;
+  }
+  .thumb-empty {
+    width: 52px; height: 40px; display: grid; place-items: center; font-size: 10px;
+    color: #999; border: 2px dashed #bbb; border-radius: 3px; background: #fff;
+  }
+  .gate { max-width: 420px; margin: 80px auto; padding: 24px; background: #fdf7e0;
+          border: 3px solid var(--ink); border-radius: 6px; }
+  .gate label { display: block; font-size: 12px; font-weight: 800; letter-spacing: 1px; margin-bottom: 6px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .muted { color: #7a6f45; font-size: 13px; }
+  .status { padding: 8px 12px; border-radius: 4px; background: rgba(0,0,0,.07); font-size: 13px; }
+  .hidden { display: none !important; }
+  .stock-low { color: #a11b1b; font-weight: 800; }
+  td.actions { white-space: nowrap; }
+  @media (max-width: 700px) {
+    th.hide-sm, td.hide-sm { display: none; }
+    main { padding: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- The key never ships inside this page: the browser asks for it and keeps it
+     in localStorage, so the HTML itself stays safe to serve unauthenticated. -->
+<div id="gate" class="gate">
+  <h2 style="margin-top:0">Inventario — El Paisa</h2>
+  <label for="key">CLAVE DE SINCRONIZACIÓN</label>
+  <input id="key" type="password" placeholder="POS_SYNC_KEY" autocomplete="current-password">
+  <p id="gate-error" class="muted"></p>
+  <button class="btn btn-go" id="enter" style="width:100%">ENTRAR</button>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Inventario — El Paisa</h1>
+    <div class="spacer"></div>
+    <span id="sync-note" class="muted"></span>
+    <button class="btn" id="refresh">Actualizar</button>
+    <button class="btn" id="logout">Salir</button>
+  </header>
+
+  <main>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="products" aria-selected="true">Productos</button>
+      <button class="tab" role="tab" data-view="sales" aria-selected="false">Ventas</button>
+      <button class="tab" role="tab" data-view="cortes" aria-selected="false">Cortes</button>
+      <button class="tab" role="tab" data-view="mant" aria-selected="false">Mantenimiento</button>
+    </div>
+
+    <section id="view-products">
+      <div class="row" style="margin-bottom:12px">
+        <input id="new-name" type="text" placeholder="Nombre del producto nuevo">
+        <input id="new-price" type="number" step="0.01" min="0" placeholder="Precio" style="max-width:120px">
+        <input id="new-stock" type="number" step="1" placeholder="Cant." style="max-width:100px">
+        <label class="row" style="gap:6px;white-space:nowrap" title="Desmarca para cosas a granel">
+          <input id="new-tracked" type="checkbox" checked> inventario
+        </label>
+        <button class="btn btn-go" id="add">AGREGAR</button>
+      </div>
+      <p id="products-status" class="status hidden"></p>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:70px">Foto</th>
+            <th>Nombre</th>
+            <th class="hide-sm" style="width:150px">Código</th>
+            <th class="num" style="width:110px">Precio</th>
+            <th style="width:70px">Llevar</th>
+            <th class="num" style="width:100px">Cant.</th>
+            <th class="actions" style="width:200px">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="products-body"></tbody>
+      </table>
+      <p class="muted">
+        Los cambios llegan a la caja en el siguiente ciclo de sincronización.
+        La cantidad sólo se envía si escribes un número nuevo — así una edición
+        de precio nunca pisa el conteo que la caja lleva de las ventas del día.
+      </p>
+    </section>
+
+    <section id="view-sales" class="hidden">
+      <table>
+        <thead><tr><th>Fecha</th><th class="hide-sm">Caja</th><th class="num">Total</th><th>Artículos</th></tr></thead>
+        <tbody id="sales-body"></tbody>
+      </table>
+    </section>
+
+    <section id="view-mant" class="hidden">
+      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+        <button class="btn btn-go" id="backup-now">Respaldar ahora</button>
+        <button class="btn" id="purge-preview">Ver qué se borraría</button>
+        <button class="btn btn-danger" id="purge-now">Limpiar ahora</button>
+      </div>
+      <p id="mant-status" class="status hidden"></p>
+      <div id="mant-summary" class="muted"></div>
+      <h3>Respaldos</h3>
+      <table>
+        <thead><tr><th>Fecha</th><th>Archivo</th><th class="num">Tamaño</th><th style="width:120px">Descargar</th></tr></thead>
+        <tbody id="backups-body"></tbody>
+      </table>
+    </section>
+
+    <section id="view-cortes" class="hidden">
+      <table>
+        <thead><tr><th>Fecha</th><th class="hide-sm">Caja</th><th class="num">Ventas</th><th class="num">Efectivo</th></tr></thead>
+        <tbody id="cortes-body"></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let KEY = localStorage.getItem('posSyncKey') || ''
+
+const money = (cents) => {
+  const abs = Math.abs(Math.round(cents || 0))
+  return `$${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, '0')}`
+}
+const when = (iso) => {
+  const d = new Date(iso)
+  return isNaN(d) ? String(iso ?? '') : d.toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })
+}
+
+async function api(route, options = {}) {
+  const res = await fetch(route, {
+    ...options,
+    headers: { Authorization: `Bearer ${KEY}`, 'X-Store-Id': 'admin', ...(options.headers || {}) },
+  })
+  if (res.status === 401) { signOut('Clave incorrecta'); throw new Error('unauthorized') }
+  if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => '')}`)
+  return res.json()
+}
+
+function signOut(message) {
+  localStorage.removeItem('posSyncKey')
+  KEY = ''
+  $('app').classList.add('hidden')
+  $('gate').classList.remove('hidden')
+  $('gate-error').textContent = message || ''
+}
+
+function note(el, message, ms = 3000) {
+  el.textContent = message
+  el.classList.remove('hidden')
+  if (ms) setTimeout(() => el.classList.add('hidden'), ms)
+}
+
+/* ------------------------------------------------------------- products */
+
+function productRow(p) {
+  const tr = document.createElement('tr')
+  if (!p.active) tr.style.opacity = '.45'
+
+  const img = p.image_file
+    ? `<img class="thumb" src="/images/${encodeURIComponent(p.image_file)}" alt="">`
+    : '<div class="thumb-empty">sin foto</div>'
+
+  tr.innerHTML = `
+    <td>${img}</td>
+    <td><input type="text" value="${escapeHtml(p.name)}" data-f="name"></td>
+    <td class="hide-sm"><input type="text" value="${escapeHtml(p.barcode || '')}" data-f="barcode"></td>
+    <td class="num"><input type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" data-f="price"></td>
+    <td style="text-align:center"><input type="checkbox" data-f="tracked" ${p.track_stock ? 'checked' : ''}></td>
+    <td class="num"><input type="number" step="1" value="${p.stock}" data-f="stock" ${p.track_stock ? '' : 'disabled'}></td>
+    <td class="actions">
+      <button class="btn btn-go" data-a="save">Guardar</button>
+      <button class="btn" data-a="photo">Foto</button>
+      <button class="btn btn-danger" data-a="del">×</button>
+    </td>`
+
+  const field = (name) => tr.querySelector(`[data-f="${name}"]`)
+  const originalStock = String(p.stock)
+
+  // Goods sold loose have no unit count, so the quantity box goes dead the
+  // moment tracking is switched off.
+  field('tracked').onchange = (e) => { field('stock').disabled = !e.target.checked }
+
+  tr.querySelector('[data-a="save"]').onclick = async (e) => {
+    e.target.disabled = true
+    try {
+      const typedStock = field('stock').value
+      await api(`/api/products/${p.uuid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: field('name').value.trim(),
+          barcode: field('barcode').value.trim() || null,
+          priceCents: Math.round(Number(field('price').value) * 100),
+          trackStock: field('tracked').checked,
+          // Only send stock when it actually changed, so saving a price edit
+          // does not stamp a stale count over what the register has counted.
+          stock: typedStock === originalStock ? undefined : typedStock,
+        }),
+      })
+      note($('products-status'), `${field('name').value} guardado`)
+      loadProducts()
+    } catch (err) {
+      note($('products-status'), `Error: ${err.message}`, 6000)
+      e.target.disabled = false
+    }
+  }
+
+  tr.querySelector('[data-a="photo"]').onclick = () => {
+    const picker = document.createElement('input')
+    picker.type = 'file'
+    picker.accept = 'image/*'
+    picker.onchange = async () => {
+      const file = picker.files && picker.files[0]
+      if (!file) return
+      note($('products-status'), 'Subiendo foto…', 0)
+      try {
+        await api(`/api/products/${p.uuid}/image`, {
+          method: 'POST',
+          headers: { 'Content-Type': file.type || 'image/png' },
+          body: file,
+        })
+        note($('products-status'), 'Foto subida. La caja la descargará al sincronizar.')
+        loadProducts()
+      } catch (err) {
+        note($('products-status'), `Error: ${err.message}`, 6000)
+      }
+    }
+    picker.click()
+  }
+
+  tr.querySelector('[data-a="del"]').onclick = async () => {
+    if (!confirm(`¿Quitar "${p.name}" del catálogo?`)) return
+    await api(`/api/products/${p.uuid}`, { method: 'DELETE' })
+    loadProducts()
+  }
+
+  return tr
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+async function loadProducts() {
+  const { products } = await api('/api/products')
+  const body = $('products-body')
+  body.replaceChildren(...products.map(productRow))
+  $('sync-note').textContent = `${products.filter((p) => p.active).length} productos`
+}
+
+async function loadSales() {
+  const { sales } = await api('/api/sales')
+  $('sales-body').replaceChildren(...sales.map((s) => {
+    const tr = document.createElement('tr')
+    const items = JSON.parse(s.items || '[]')
+      .map((i) => `${i.qty}× ${i.name}`).join(', ')
+    tr.innerHTML = `<td>${when(s.created_at)}</td><td class="hide-sm">${escapeHtml(s.store_id)}</td>
+                    <td class="num">${money(s.total_cents)}</td><td>${escapeHtml(items)}</td>`
+    return tr
+  }))
+}
+
+async function loadCortes() {
+  const { cortes } = await api('/api/cortes')
+  $('cortes-body').replaceChildren(...cortes.map((c) => {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `<td>${when(c.created_at)}</td><td class="hide-sm">${escapeHtml(c.store_id)}</td>
+                    <td class="num">${c.sale_count}</td><td class="num">${money(c.total_cents)}</td>`
+    return tr
+  }))
+}
+
+/* -------------------------------------------------------- maintenance */
+
+const size = (b) => b < 1024 ? `${b} B`
+  : b < 1048576 ? `${Math.round(b / 1024)} KB`
+  : `${(b / 1048576).toFixed(1)} MB`
+
+const everyPhrase = (ms) =>
+  ms % 86400000 === 0 ? `cada ${ms / 86400000} día(s)`
+  : ms % 3600000 === 0 ? `cada ${ms / 3600000} h`
+  : ms % 60000 === 0 ? `cada ${ms / 60000} min`
+  : `cada ${Math.round(ms / 1000)} s`
+
+async function loadMaintenance() {
+  const { status } = await api('/api/maintenance')
+
+  $('mant-summary').innerHTML = `
+    Respaldo automático: <strong>${status.backupEnabled ? everyPhrase(status.backupIntervalMs) : 'apagado'}</strong>,
+    conservando <strong>${status.backupKeep}</strong> copias &middot;
+    último <strong>${status.lastBackupAt ? when(status.lastBackupAt) : 'nunca'}</strong><br>
+    Limpieza automática: <strong>${status.purgeEnabled
+      ? `ventas de más de ${status.purgeDays} días, feed de más de ${status.changesDays}`
+      : 'apagada'}</strong>
+    ${status.lastPurgeAt ? `&middot; última <strong>${when(status.lastPurgeAt)}</strong>` : ''}<br>
+    Base de datos: <strong>${size(status.databaseBytes)}</strong>
+    ${status.lastBackupError ? `<br><span style="color:#a11b1b">Error: ${escapeHtml(status.lastBackupError)}</span>` : ''}
+  `
+
+  $('backups-body').replaceChildren(...status.backups.map((b) => {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `<td>${when(b.createdAt)}</td><td>${escapeHtml(b.name)}</td>
+                    <td class="num">${size(b.bytes)}</td><td></td>`
+    const btn = document.createElement('button')
+    btn.className = 'btn'
+    btn.textContent = 'Bajar'
+    // The download needs the bearer header, so a plain <a href> will not do:
+    // fetch it, then hand the browser a blob to save.
+    btn.onclick = async () => {
+      btn.disabled = true
+      try {
+        const res = await fetch(`/api/backups/${encodeURIComponent(b.name)}`, {
+          headers: { Authorization: `Bearer ${KEY}` },
+        })
+        if (!res.ok) throw new Error(String(res.status))
+        const url = URL.createObjectURL(await res.blob())
+        const a = document.createElement('a')
+        a.href = url
+        a.download = b.name
+        a.click()
+        URL.revokeObjectURL(url)
+      } catch (err) {
+        note($('mant-status'), `Error: ${err.message}`, 6000)
+      }
+      btn.disabled = false
+    }
+    tr.lastElementChild.appendChild(btn)
+    return tr
+  }))
+}
+
+$('backup-now').onclick = async () => {
+  note($('mant-status'), 'Respaldando…', 0)
+  const r = await api('/api/backup', { method: 'POST' })
+  note($('mant-status'), r.ok ? `Respaldo creado: ${r.backup.name}` : `Error: ${r.error}`, 5000)
+  loadMaintenance()
+}
+
+$('purge-preview').onclick = async () => {
+  const r = await api('/api/purge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dryRun: true }),
+  })
+  note($('mant-status'),
+    `Se borrarían ${r.wouldDelete.sales} ventas, ${r.wouldDelete.cortes} cortes y ` +
+    `${r.wouldDelete.changes} cambios del feed. Nada se ha borrado.`, 9000)
+}
+
+$('purge-now').onclick = async () => {
+  if (!confirm('Esto borra ventas y cortes viejos de forma permanente.\n\nSe toma un respaldo antes. ¿Continuar?')) return
+  note($('mant-status'), 'Limpiando…', 0)
+  const r = await api('/api/purge', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  })
+  note($('mant-status'), r.ok
+    ? `Listo. Borrados: ${r.deleted.sales} ventas, ${r.deleted.cortes} cortes, ${r.deleted.images} fotos huérfanas.`
+    : `Error: ${r.error}`, 9000)
+  loadMaintenance()
+}
+
+/* ----------------------------------------------------------------- wiring */
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)))
+    for (const view of ['products', 'sales', 'cortes', 'mant']) {
+      $(`view-${view}`).classList.toggle('hidden', view !== tab.dataset.view)
+    }
+    if (tab.dataset.view === 'sales') loadSales()
+    if (tab.dataset.view === 'cortes') loadCortes()
+    if (tab.dataset.view === 'mant') loadMaintenance()
+  }
+})
+
+$('add').onclick = async () => {
+  const name = $('new-name').value.trim()
+  if (!name) return note($('products-status'), 'Falta el nombre', 3000)
+  await api('/api/products', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      priceCents: Math.round(Number($('new-price').value || 0) * 100),
+      stock: Number($('new-stock').value || 0),
+      trackStock: $('new-tracked').checked,
+    }),
+  })
+  $('new-name').value = ''; $('new-price').value = ''; $('new-stock').value = ''
+  loadProducts()
+}
+
+$('refresh').onclick = () => loadProducts()
+$('logout').onclick = () => signOut('')
+
+$('enter').onclick = async () => {
+  KEY = $('key').value.trim()
+  if (!KEY) return
+  try {
+    await api('/api/products')
+    localStorage.setItem('posSyncKey', KEY)
+    $('gate').classList.add('hidden')
+    $('app').classList.remove('hidden')
+    loadProducts()
+  } catch {
+    $('gate-error').textContent = 'No se pudo entrar. Revisa la clave.'
+  }
+}
+$('key').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('enter').click() })
+
+// A key already in localStorage skips the gate, but only if it still works.
+if (KEY) {
+  api('/api/products')
+    .then(() => {
+      $('gate').classList.add('hidden')
+      $('app').classList.remove('hidden')
+      loadProducts()
+    })
+    .catch(() => {})
+}
+</script>
+</body>
+</html>

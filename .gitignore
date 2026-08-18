@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------- secrets --
+
+# The sync server's bearer token and domain live here. Anyone with this file can
+# read and rewrite the whole catalogue, so it must never be committed.
+# `server/.env.example` is the tracked template.
+.env
+.env.*
+!.env.example
+server/.env
+
+# --------------------------------------------------------------- artefacts --
+
+node_modules/
+dist/
+
+# electron-builder / electron-packager output, whichever gets used later.
+out/
+release/
+build/
+
+*.tsbuildinfo
+.vite/
+
+# -------------------------------------------------------------- store data --
+
+# The server's SQLite database, product photos and backups. This is the shop's
+# live data — it belongs in a backup, never in the repository.
+server/data/
+
+# Any stray SQLite file, including the -wal and -shm sidecars WAL mode creates.
+# The register's own pos.db lives in %APPDATA%, but seed and capture scripts
+# write throwaway databases that can land here.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --------------------------------------------------- dev harness output ----
+
+# `npx electron scripts/capture.cjs <dir>` writes screenshots. They are
+# regenerable evidence, not source, and they are large and binary.
+.captures/
+.captures-*/
+
+# ------------------------------------------------------------------- logs --
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ----------------------------------------------------------------- editors --
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*~
+
+# ---------------------------------------------------------------------- OS --
+
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ------------------------------------------------------------------- notes --
+#
+# Deliberately NOT ignored:
+#   package-lock.json   pins the exact dependency tree; the build is not
+#                       reproducible without it.
+#   server/.env.example the template that documents every variable.
+#   server/Caddyfile    deployment config, no secrets in it — the domain and
+#                       ACME email come from .env at runtime.
