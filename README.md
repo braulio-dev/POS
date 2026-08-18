@@ -38,7 +38,7 @@ quietly operate on `%APPDATA%/Electron` instead.
     src/hooks/             barcode scanner (keyboard-wedge listener)
     src/components/        Header, ProductGrid, Cart, modals, change screen
     server/                sync server for your VPS + the browser admin page
-    server/docker-compose.yml  the deployment: sync server + Caddy for TLS
+    server/docker-compose.yml  the deployment (Caddy config in Caddyfile.snippet)
 
 ## Configuración
 
@@ -96,7 +96,8 @@ whatever came back. See `server/README.md` for the server side and the protocol.
 
 The server backs itself up on a timer (every 5 minutes out of the box) and can
 purge history past a retention window. Both are visible from Configuración →
-Respaldos. It ships as a Docker Compose stack with Caddy for TLS.
+Respaldos. It ships as a one-service Docker Compose stack, bound to loopback and
+fronted by whatever reverse proxy already runs on the VPS.
 
 Sync merges last-write-wins, with product metadata and stock kept as **separate
 entities on separate timestamps** — otherwise editing a price from home would

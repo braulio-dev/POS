@@ -1,16 +1,26 @@
-# Sync server + Caddy for TLS.
+# Sync server only. TLS is handled by the Caddy you already run on this VPS —
+# see Caddyfile.snippet for the block to paste into your existing Caddyfile.
 #
-#   cp .env.example .env     # then edit it — POS_SYNC_KEY and POS_DOMAIN
+#   cp .env.example .env     # then edit it — POS_SYNC_KEY
 #   docker compose up -d
-#
-# Caddy gets a certificate from Let's Encrypt on first boot and renews it on its
-# own, so there is no certbot timer to forget about.
 
 services:
   pos-sync:
     build: .
     # Survives crashes and reboots, but stays down if you deliberately stop it.
     restart: unless-stopped
+
+    ports:
+      # Loopback ONLY. Your Caddy reaches this over 127.0.0.1; the internet
+      # cannot.
+      #
+      # Do not shorten this to "8787:8787". That binds 0.0.0.0 and publishes the
+      # API — whose only auth is a bearer token — straight to the internet. It
+      # is worse than it looks on a VPS: Docker writes its own iptables rules
+      # ahead of ufw, so a published port is reachable even when `ufw status`
+      # swears it is blocked.
+      - "127.0.0.1:8787:8787"
+
     environment:
       POS_SYNC_KEY: ${POS_SYNC_KEY:?POS_SYNC_KEY is required - copy .env.example to .env}
       PORT: 8787
@@ -28,39 +38,26 @@ services:
       POS_PURGE_DAYS: ${POS_PURGE_DAYS:-365}
       POS_PURGE_CHANGES_DAYS: ${POS_PURGE_CHANGES_DAYS:-30}
       POS_STALE_STORE_DAYS: ${POS_STALE_STORE_DAYS:-30}
+
     volumes:
       - pos-data:/data
-    # Deliberately no `ports:` — nothing reaches this container except through
-    # Caddy. The key is a bearer token; exposing 8787 in the clear would hand it
-    # to anyone on the path.
-    expose:
-      - "8787"
-    networks: [pos]
 
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"   # HTTP/3
-    environment:
-      POS_DOMAIN: ${POS_DOMAIN:?POS_DOMAIN is required - the hostname Caddy gets a certificate for}
-      ACME_EMAIL: ${ACME_EMAIL:-}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Certificates persist here. Lose this volume and every restart asks
-      # Let's Encrypt for a fresh certificate, which will hit their rate limit.
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - pos-sync
-    networks: [pos]
+  # --- If your Caddy runs in Docker rather than on the host -----------------
+  #
+  # A container cannot reach the host's 127.0.0.1, so the loopback binding above
+  # is useless to it. Instead: delete the `ports:` block, and join the network
+  # your Caddy container is already on —
+  #
+  #     networks: [web]
+  #
+  # then add at the bottom of this file:
+  #
+  #     networks:
+  #       web:
+  #         external: true
+  #
+  # and proxy to `pos-sync:8787` (the service name) instead of `127.0.0.1:8787`.
+  # Find the network name with: docker inspect -f '{{json .NetworkSettings.Networks}}' <caddy-container>
 
 volumes:
   pos-data:
-  caddy-data:
-  caddy-config:
-
-networks:
-  pos:

@@ -1,0 +1,35 @@
+# Paste this into your existing Caddyfile (usually /etc/caddy/Caddyfile),
+# change the hostname, then validate and reload:
+#
+#     sudo caddy validate --config /etc/caddy/Caddyfile
+#     sudo systemctl reload caddy
+#
+# Caddy obtains and renews the certificate on its own. Point the DNS A record at
+# this server before reloading, or the certificate request will fail.
+
+pos.tudominio.com {
+	encode gzip
+
+	# Product photos are uploaded whole; Caddy's default body cap would reject
+	# anything off a modern phone camera.
+	request_body {
+		max_size 30MB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# docker-compose.yml binds the container to 127.0.0.1 only, so this is the
+	# single route in. No timeouts are set: Caddy 2 has none by default, which is
+	# what a slow photo upload from home over domestic broadband needs.
+	#
+	# If your Caddy is itself a container, proxy to `pos-sync:8787` over a shared
+	# Docker network instead — 127.0.0.1 inside a container is that container,
+	# not the host.
+	reverse_proxy 127.0.0.1:8787
+}

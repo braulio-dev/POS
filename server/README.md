@@ -9,41 +9,165 @@ nothing to `npm install`, nothing to audit, and nothing to break on a bump.
 
 ## Deploying with Docker Compose
 
+TLS is handled by the Caddy already running on this VPS; the stack is just the
+sync server.
+
     cd server
     cp .env.example .env
-    # edit .env: set POS_DOMAIN, ACME_EMAIL and POS_SYNC_KEY
+    # edit .env: set POS_SYNC_KEY
     docker compose up -d
 
 Generate the key with:
 
     node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
-Point your domain's DNS **A record at the server before the first start** —
-Caddy asks Let's Encrypt for a certificate on boot, and that fails if the name
-does not resolve yet. Ports 80 and 443 must be reachable from the internet.
-
-Both services are `restart: unless-stopped`, so they come back after a crash or
-a reboot but stay down when you deliberately stop them.
+At this point the server is running but only reachable on loopback. Wire up
+Caddy next — see **[Setting up Caddy](#setting-up-caddy)** below.
 
     docker compose ps           # health
     docker compose logs -f pos-sync
-    docker compose pull && docker compose up -d   # update Caddy
-    docker compose up -d --build                  # after editing server.mjs
+    docker compose up -d --build   # after editing server.mjs
 
 ### Why it is shaped this way
 
-- **The sync container publishes no ports.** Only Caddy is exposed; the server
-  is reachable solely over the `pos` network. The key is a bearer token, so an
-  open 8787 would hand it to anyone able to watch the traffic.
-- **Caddy terminates TLS** and renews on its own — no certbot timer to forget.
-  Its `caddy-data` volume holds the certificates; lose it and every restart
-  requests fresh ones, which will hit Let's Encrypt's rate limit.
+- **The port is bound to `127.0.0.1`, not `0.0.0.0`.** Caddy reaches it over
+  loopback; nothing else can. Do not shorten the mapping to `"8787:8787"` — that
+  publishes an API whose only auth is a bearer token straight to the internet,
+  and Docker writes its iptables rules ahead of ufw, so the port stays reachable
+  even when `ufw status` says otherwise.
 - **The image pins `node:22.14-alpine`** rather than floating on `node:22`.
   `node:sqlite` is still an experimental API that has changed between minors,
   and a register that silently stops syncing after an unattended base image
   bump is precisely the failure that pin prevents.
 - **`CMD` is in exec form** so the process is PID 1 and gets `SIGTERM` directly.
   That is what triggers the shutdown backup on `docker compose down`.
+
+## Setting up Caddy
+
+Caddy is already running on this VPS, so this is one site block added to the
+config you have — no new service, no certbot, no renewal timer.
+
+### 1. Point DNS at the server
+
+Create an **A record** for the hostname (say `pos.tudominio.com`) pointing at
+the VPS's public IP. Do this *first*: Caddy asks Let's Encrypt for a certificate
+the moment the site block loads, and the challenge fails if the name does not
+resolve yet. Check it has propagated:
+
+    dig +short pos.tudominio.com
+
+Ports **80 and 443 must be open** to the internet. Port 80 is not optional —
+it is how the HTTP-01 challenge is answered, and Caddy also uses it to redirect
+to HTTPS.
+
+    sudo ufw allow 80,443/tcp
+
+### 2. Add the site block
+
+Open `/etc/caddy/Caddyfile` and append the contents of `Caddyfile.snippet`,
+changing the hostname:
+
+    pos.tudominio.com {
+        encode gzip
+
+        # Product photos are uploaded whole; the default body cap would reject
+        # anything off a modern phone camera.
+        request_body {
+            max_size 30MB
+        }
+
+        header {
+            Strict-Transport-Security "max-age=31536000; includeSubDomains"
+            X-Content-Type-Options "nosniff"
+            X-Frame-Options "DENY"
+            Referrer-Policy "no-referrer"
+            -Server
+        }
+
+        reverse_proxy 127.0.0.1:8787
+    }
+
+Two things that are deliberately absent:
+
+- **No `tls` directive.** Caddy provisions and renews the certificate itself as
+  soon as it sees a public hostname. Adding one usually breaks that.
+- **No proxy timeouts.** Caddy 2 sets none by default, which is exactly what a
+  slow photo upload from home over domestic broadband needs. (`read_timeout`
+  and `write_timeout` are *not* valid inside `transport http` — they are
+  server-level options, and putting them there fails validation.)
+
+`request_body max_size` is the one you do need: without it a phone photo is
+rejected with a 413 and the admin page just says the upload failed.
+
+### 3. Validate and reload
+
+Reload rather than restart — it swaps config with no dropped connections, and
+it refuses to apply a broken file:
+
+    sudo caddy validate --config /etc/caddy/Caddyfile
+    sudo systemctl reload caddy
+
+### 4. Check it works
+
+    curl https://pos.tudominio.com/health
+
+Expect `{"server":"pos-sync","version":1,...}`. That route needs no key, which
+is why it is safe to curl and why the container healthcheck uses it.
+
+Then confirm the key path works end to end:
+
+    curl -s https://pos.tudominio.com/api/products \
+      -H "Authorization: Bearer $POS_SYNC_KEY"
+
+A `401` means the key in `.env` and the one you are sending disagree. Finally,
+open `https://pos.tudominio.com` in a browser — that is the admin page.
+
+### If it does not come up
+
+    sudo journalctl -u caddy -f          # certificate + proxy errors
+    docker compose logs -f pos-sync      # the app behind it
+    sudo ss -tlnp | grep 8787            # should show 127.0.0.1:8787, not 0.0.0.0
+
+Common causes, in the order they usually bite:
+
+| Symptom | Cause |
+| --- | --- |
+| Certificate never issued | DNS not propagated yet, or port 80 closed |
+| `502 Bad Gateway` | Container not running, or Caddy is in Docker and cannot see the host's loopback |
+| `413` on photo upload | `request_body max_size` missing from the site block |
+| Works on `:8787`, not on `443` | Site block never loaded — check `caddy validate` output |
+
+### If your Caddy runs in Docker
+
+A container cannot reach the host's `127.0.0.1`, so the loopback binding is no
+use to it. Drop the `ports:` block from `docker-compose.yml`, put both
+containers on the same network, and proxy to the service name:
+
+    # docker-compose.yml
+    services:
+      pos-sync:
+        networks: [web]
+    networks:
+      web:
+        external: true
+
+    # Caddyfile
+    reverse_proxy pos-sync:8787
+
+Find the network your Caddy container is already on with:
+
+    docker inspect -f '{{json .NetworkSettings.Networks}}' <caddy-container>
+
+### Pointing the register at it
+
+**Configuración → Sincronización** (password, default `1234`):
+
+- **Dirección del servidor** — `https://pos.tudominio.com`, no trailing slash
+- **Clave** — the same `POS_SYNC_KEY`
+- **Nombre de esta caja** — anything; it identifies this register in the change
+  feed. Two registers must not share a name.
+
+Tick **Sincronizar con el servidor**, then **Probar conexión**.
 
 ## Backups
 
