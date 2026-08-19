@@ -93,10 +93,10 @@ export function AddProductModal({ onSave, onCancel }: Props) {
 
         <div className="field-row">
           <label className="field">
-            {/* The label follows the Inventario switch, because the switch is
-                what decides which number this is. A field that says PRECIO
-                while the register is about to multiply it by 1.35 kilos is the
-                kind of quiet mismatch that only surfaces at the counter. */}
+            {/* The label follows the choice below, because that choice is what
+                decides which number this is. A field that says PRECIO while the
+                register is about to multiply it by 1.35 kilos is the kind of
+                quiet mismatch that only surfaces at the counter. */}
             <span>{trackStock ? 'PRECIO' : 'PRECIO POR KILO'}</span>
             <input
               className="text-input"
@@ -117,36 +117,46 @@ export function AddProductModal({ onSave, onCancel }: Props) {
               min="0"
               value={trackStock ? stock : ''}
               disabled={!trackStock}
-              placeholder={trackStock ? undefined : 'granel'}
+              placeholder={trackStock ? undefined : 'se pesa'}
               onChange={(e) => { setStock(e.target.value); setError(null) }}
               onKeyDown={(e) => { if (e.key === 'Enter') save() }}
             />
           </label>
         </div>
 
-        {/* Off for anything sold by weight or by the bag: without this it would
-            sit at zero forever and report AGOTADO on every single scan. */}
-        <label className="checkbox-field">
-          <input
-            type="checkbox"
-            checked={trackStock}
-            onChange={(e) => setTrackStock(e.target.checked)}
-          />
-          {/* Same word as the column header in Inventario and on the admin page,
-              so the switch is recognisably the same switch in all three places. */}
-          <span>Inventario</span>
-        </label>
+        {/*
+          This used to be a checkbox labelled "Inventario", which named the
+          storage column rather than the decision. It settles two things at once
+          — whether there is a count to keep, and whether the price is per piece
+          or per kilo — and neither was legible from the word or from a box that
+          only greyed out the quantity field when you unticked it.
 
-        {/* Stated where the decision is made rather than in a help page. The
-            switch does two things at once — it stops the AGOTADO warnings and it
-            turns the price into a price per kilo — and only one of those is
-            obvious from its name. */}
-        {!trackStock && (
-          <p className="muted-note">
-            Sin inventario se vende <strong>a granel</strong>: el precio es por
-            kilo y la caja pide el peso en vez de agregar una pieza.
-          </p>
-        )}
+          Two labelled choices instead. Every state now says what it means, both
+          options are visible at the same time, and the note underneath spells
+          out the consequence for whichever one is selected.
+        */}
+        <div className="field">
+          <span>¿CÓMO SE VENDE?</span>
+          <div className="sale-unit-toggle">
+            <button
+              className={`sale-unit-option${trackStock ? ' is-active' : ''}`}
+              onClick={() => setTrackStock(true)}
+            >
+              POR PIEZA
+            </button>
+            <button
+              className={`sale-unit-option${!trackStock ? ' is-active' : ''}`}
+              onClick={() => setTrackStock(false)}
+            >
+              POR KILO
+            </button>
+          </div>
+          <span className="muted-note">
+            {trackStock
+              ? 'Se cuenta por pieza y el precio es el de una pieza.'
+              : 'Se pesa en la báscula: el precio es por kilo, la caja pide el peso al venderlo y no se lleva conteo (si no, saldría siempre como AGOTADO).'}
+          </span>
+        </div>
 
         <div className="field">
           <span>IMAGEN</span>

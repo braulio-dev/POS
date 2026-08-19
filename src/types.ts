@@ -24,7 +24,7 @@ export interface CartLine {
   unitPriceCents: number
   /** Pieces (whole), or kilos (three decimals) when `unit` is 'kg'. */
   qty: number
-  /** How `qty` reads. Absent on lines rung up before granel existed: piezas. */
+  /** How `qty` reads. Absent on lines rung up before weights existed: piezas. */
   unit: SaleUnit
   /**
    * What the line actually costs, rounded to the centavo exactly once when it
@@ -70,6 +70,13 @@ export interface Settings {
   corteThresholdCents: string
   /** At or below this many units a product is flagged as running out. */
   lowStockThreshold: string
+
+  /**
+   * How the deli scale encodes its labels: 'off' | 'weight' | 'price'.
+   * Off by default — no digit in the label says which, and reading a price as a
+   * weight sells kilos of ham to someone who asked for pesos of it.
+   */
+  scaleMode: string
   /**
    * The fondo: what the corte suggests leaving in the drawer for the next
    * shift. Only a default — every cut can leave a different amount, and after
@@ -286,6 +293,11 @@ export interface StockEntry {
 export interface PosApi {
   listProducts(): Promise<Product[]>
   findByBarcode(barcode: string): Promise<Product | null>
+  /**
+   * Looks up the product a scale label refers to. `prefix` is the label's first
+   * seven digits, accepted as an alternative registration of the same product.
+   */
+  findByScaleCode(itemCode: string, prefix?: string): Promise<Product | null>
   createProduct(input: NewProductInput): Promise<Product>
   updateProduct(id: number, input: NewProductInput): Promise<Product>
   deactivateProduct(id: number): Promise<void>

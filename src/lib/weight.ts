@@ -1,7 +1,7 @@
 import type { Product } from '../types'
 
 /**
- * Selling by weight — "granel".
+ * Selling by weight — sold "por kilo".
  *
  * The rule is deliberately the one the owner already understands: **anything
  * without Inventario is sold by the kilo.** There is no third switch to set and
@@ -82,4 +82,81 @@ export function formatKg(kg: number): string {
 export function formatQty(qty: number, unit: SaleUnit): string {
   if (unit === 'kg') return formatKg(qty)
   return qty === 1 ? '' : `× ${qty}`
+}
+
+/* ------------------------------------------------------------ scale labels */
+
+/**
+ * What the deli scale prints on its own labels.
+ *
+ * A scale that prints labels encodes the measurement into an EAN-13 beginning
+ * with `2` — the range GS1 reserves for codes a shop assigns itself, which is
+ * exactly what these are. Thirteen digits, in the common layout:
+ *
+ *     2X IIIII VVVVV C
+ *     │  │     │     └ check digit
+ *     │  │     └────── the measurement: grams, or centavos
+ *     │  └──────────── the item code the scale was programmed with
+ *     └─────────────── in-store flag, 20–29
+ *
+ * Which of the two `VVVVV` is depends on how the scale was set up, and no digit
+ * in the label says which — so it is a setting rather than a guess. Reading a
+ * price as a weight would sell 4.5 kg of ham to someone who asked for $45 of
+ * it, so the wrong answer here is expensive and silence is better than a guess.
+ * That is also why this is off until someone turns it on.
+ *
+ * The check digit is deliberately not verified. Scales disagree about how it is
+ * computed — some follow EAN-13 over all twelve digits, others run their own
+ * check over the price field alone — and rejecting a label the scanner read
+ * perfectly well would send the cashier back to typing for no gain. A wrong
+ * digit surfaces as an unknown item code, which the register already handles.
+ */
+export type ScaleMode = 'off' | 'weight' | 'price'
+
+export interface ScaleLabel {
+  /** The five digits identifying the product, as printed. */
+  itemCode: string
+  /** Flag and item code together — the label's first seven digits. */
+  prefix: string
+  /** Weight in kilos, when the scale encodes grams. */
+  kg: number | null
+  /** Amount in cents, when the scale encodes the price. */
+  amountCents: number | null
+}
+
+export function parseScaleBarcode(code: string, mode: ScaleMode): ScaleLabel | null {
+  if (mode === 'off') return null
+  if (!/^2\d{12}$/.test(code)) return null
+
+  const itemCode = code.slice(2, 7)
+  const prefix = code.slice(0, 7)
+  const value = Number(code.slice(7, 12))
+  if (!Number.isFinite(value) || value <= 0) return null
+
+  return mode === 'weight'
+    ? { itemCode, prefix, kg: round3(value / 1000), amountCents: null }
+    : { itemCode, prefix, kg: null, amountCents: value }
+}
+
+/**
+ * Turns a decoded label into the line to add.
+ *
+ * Both modes end up carrying a weight and a price, because the ticket needs one
+ * and the corte needs the other. Which of the two is exact follows from which
+ * one the label actually stated: a weight label is authoritative about grams
+ * and the price is computed from it; a price label is authoritative about pesos
+ * — the customer asked for $45 of ham and the scale cut $45 of ham — and the
+ * weight is what gets solved for, exactly like typing an importe by hand.
+ */
+export function scaleLine(
+  label: ScaleLabel, pricePerKgCents: number
+): { kg: number; totalCents: number } | null {
+  if (label.kg !== null) {
+    return { kg: label.kg, totalCents: weightTotalCents(pricePerKgCents, label.kg) }
+  }
+  if (label.amountCents !== null) {
+    const kg = kgForAmount(pricePerKgCents, label.amountCents)
+    return kg === null ? null : { kg, totalCents: label.amountCents }
+  }
+  return null
 }

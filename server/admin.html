@@ -102,6 +102,12 @@
   .hidden { display: none !important; }
   .stock-low { color: var(--red); font-weight: 700; }
 
+  /* The price and its unit ride together: the same figure is a price per piece
+     or a price per kilo depending on the column beside it. */
+  .price-cell { display: flex; align-items: center; gap: 6px; }
+  .price-cell input { min-width: 0; }
+  .unit-hint { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
   /* Whether a corte balanced, and which way a movement went. Each carries its
      own word as well as its colour, for the same reason the payment badges do:
      a printed report is black and white, and so is a colour-blind reader. */
@@ -124,6 +130,31 @@
   /* The authorisation number, shown under the badge. It is the only thing the
      owner can quote back to Clip when a charge is disputed. */
   .pay-ref { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+
+  /* Bars, drawn with layout rather than a charting library: the register runs
+     offline and the admin page is a single file served off the same box, so a
+     CDN script is a dependency that fails exactly when the internet does. */
+  .chart {
+    display: flex; align-items: flex-end; gap: 4px;
+    height: 150px; padding: 8px 4px 0;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow-x: auto;
+  }
+  .bar {
+    flex: 1 1 0; min-width: 26px;
+    display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+    height: 100%; gap: 4px;
+  }
+  .bar-fill {
+    width: 100%; min-height: 2px;
+    background: var(--green); border-radius: 2px 2px 0 0;
+  }
+  .bar-label {
+    font-size: 10px; color: var(--muted); white-space: nowrap;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Twenty-four buckets need less room each than thirty labelled days. */
+  .chart-hours .bar { min-width: 14px; }
 
   .totals { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .totals div {
@@ -204,6 +235,8 @@
       <button class="tab" role="tab" data-view="sales" aria-selected="false">Ventas</button>
       <button class="tab" role="tab" data-view="cortes" aria-selected="false">Cortes</button>
       <button class="tab" role="tab" data-view="movs" aria-selected="false">Entradas y salidas</button>
+      <button class="tab" role="tab" data-view="report" aria-selected="false">Reportes</button>
+      <button class="tab" role="tab" data-view="falta" aria-selected="false">Qué falta</button>
       <button class="tab" role="tab" data-view="mant" aria-selected="false">Mantenimiento</button>
     </div>
 
@@ -211,12 +244,15 @@
       <div class="row" style="margin-bottom:12px">
         <input id="new-name" type="text" placeholder="Nombre del producto nuevo">
         <input id="new-price" type="number" step="0.01" min="0" placeholder="Precio"
-               title="Sin inventario, este precio es por kilo." style="max-width:120px">
+               title="Por kilo si el producto se pesa." style="max-width:120px">
         <input id="new-stock" type="number" step="1" placeholder="Cant." style="max-width:100px">
-        <label class="row" style="gap:6px;white-space:nowrap"
-               title="Marca lo que se cuenta por pieza. Desmárcalo para cosas a granel.">
-          <input id="new-tracked" type="checkbox" checked> inventario
-        </label>
+        <!-- Says which of the two it is, rather than naming the storage column
+             and leaving the consequence to be inferred from a greyed-out box. -->
+        <select id="new-sold-by" style="max-width:150px"
+                title="Por pieza: se cuenta y el precio es de cada una. Por kilo: se pesa en la báscula y no se lleva conteo.">
+          <option value="pza" selected>Se vende por pieza</option>
+          <option value="kg">Se vende por kilo</option>
+        </select>
         <button class="btn btn-go" id="add">AGREGAR</button>
       </div>
 
@@ -234,8 +270,8 @@
             <th style="width:70px">Foto</th>
             <th>Nombre</th>
             <th class="hide-sm" style="width:150px">Código</th>
-            <th class="num" style="width:110px">Precio</th>
-            <th style="width:86px" title="Marca los productos que se cuentan por pieza. Desmárcalo para cosas a granel (por kilo), que no tienen conteo.">Inventario</th>
+            <th class="num" style="width:130px">Precio</th>
+            <th style="width:130px" title="Por pieza: se cuenta y el precio es de cada una. Por kilo: se pesa en la báscula, el precio es por kilo y no se lleva conteo.">Se vende</th>
             <th class="num" style="width:100px">Cant.</th>
             <th class="actions" style="width:200px">Acciones</th>
           </tr>
@@ -243,11 +279,10 @@
         <tbody id="products-body"></tbody>
       </table>
       <p class="muted">
-        <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza. Desmárcalo
-        para lo que se vende <strong>a granel</strong> — frijol, queso, jamón. Eso hace
-        dos cosas: deja de contarlo (si no, saldría siempre como AGOTADO en la caja) y
-        su precio pasa a ser <strong>por kilo</strong>, así que la caja pide el peso en
-        vez de agregar una pieza.<br>
+        <strong>Se vende por pieza</strong>: se cuenta, y el precio es el de una pieza.
+        <strong>Se vende por kilo</strong> para lo que se pesa — frijol, queso, jamón:
+        el precio pasa a ser por kilo, la caja pide el peso al venderlo, y deja de
+        contarse (si no, saldría siempre como AGOTADO en la caja).<br>
         El botón <strong>×</strong> lo quita del catálogo: la fila se marca en rojo al
         final de la lista y <strong>Restaurar</strong> la revive. Sobre esa fila roja
         aparece <strong>Eliminar</strong>, que sí lo borra para siempre, aquí y en la
@@ -271,6 +306,77 @@
         </tr></thead>
         <tbody id="sales-body"></tbody>
       </table>
+    </section>
+
+    <section id="view-report" class="hidden">
+      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+        <label class="muted">Desde <input id="rep-from" type="date"></label>
+        <label class="muted">Hasta <input id="rep-to" type="date"></label>
+        <button class="btn btn-go" id="rep-apply">Ver</button>
+        <!-- The three ranges anyone actually asks for, so the common case is one
+             click and the date pickers are there for the uncommon one. -->
+        <button class="btn" data-range="0">Hoy</button>
+        <button class="btn" data-range="6">7 días</button>
+        <button class="btn" data-range="29">30 días</button>
+        <span style="margin-left:auto"></span>
+        <button class="btn" data-csv="ventas.csv">Ventas CSV</button>
+        <button class="btn" data-csv="cortes.csv">Cortes CSV</button>
+        <button class="btn" data-csv="movimientos.csv">Movimientos CSV</button>
+      </div>
+      <p id="rep-status" class="status hidden"></p>
+
+      <div id="rep-totals" class="totals"></div>
+
+      <h3>Ventas por día</h3>
+      <div id="rep-days" class="chart"></div>
+
+      <h3>Por hora del día</h3>
+      <div id="rep-hours" class="chart chart-hours"></div>
+
+      <h3>Lo que más se vende</h3>
+      <table>
+        <thead><tr>
+          <th>Producto</th><th class="num">Cantidad</th>
+          <th class="num hide-sm">Tickets</th><th class="num">Vendido</th>
+        </tr></thead>
+        <tbody id="rep-top"></tbody>
+      </table>
+      <p class="muted" style="margin-top:12px">
+        El orden es por <strong>dinero vendido</strong>, no por cantidad: lo que se
+        vende por kilo cuenta kilos y lo demás cuenta piezas, así que "37 y 37" no
+        compara nada. Cada renglón muestra su cantidad en su propia unidad.<br>
+        Los días y las horas van en la hora de la tienda, no en UTC — una venta de
+        las 7:30 de la noche pertenece a ese día, aunque el reloj universal ya haya
+        cambiado de fecha.
+      </p>
+    </section>
+
+    <section id="view-falta" class="hidden">
+      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+        <label class="muted">Avisar con <input id="falta-below" type="number" min="0" step="1" value="3" style="max-width:80px"> o menos</label>
+        <label class="muted">Ventas de los últimos <input id="falta-days" type="number" min="1" step="1" value="30" style="max-width:80px"> días</label>
+        <button class="btn btn-go" id="falta-apply">Ver</button>
+        <span style="margin-left:auto"></span>
+        <button class="btn" id="falta-copy">Copiar lista</button>
+      </div>
+      <p id="falta-status" class="status hidden"></p>
+      <table>
+        <thead><tr>
+          <th>Producto</th><th class="num">Quedan</th>
+          <th class="num hide-sm">Vendidos</th><th class="num">Alcanza para</th>
+          <th class="num hide-sm">Precio</th>
+        </tr></thead>
+        <tbody id="falta-body"></tbody>
+      </table>
+      <p class="muted" style="margin-top:12px">
+        Ordenado por <strong>qué se acaba primero</strong>, no por cuántos quedan:
+        tres de algo que vende treinta al día es una urgencia, y tres de algo que
+        vende uno a la semana no lo es. Lo que ya está en cero (o en negativo, que
+        significa que se vendió más de lo registrado) va hasta arriba.<br>
+        Lo que se vende <strong>por kilo</strong> no aparece aquí: no lleva conteo,
+        así que estaría siempre en cero y taparía justo los renglones que sí se
+        pueden surtir.
+      </p>
     </section>
 
     <section id="view-mant" class="hidden">
@@ -402,9 +508,24 @@ function productRow(p) {
     <td>${img}</td>
     <td><input type="text" value="${escapeHtml(p.name)}" data-f="name"></td>
     <td class="hide-sm"><input type="text" value="${escapeHtml(p.barcode || '')}" data-f="barcode"></td>
-    <td class="num"><input type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" data-f="price"></td>
-    <td style="text-align:center"><input type="checkbox" data-f="tracked" ${p.track_stock ? 'checked' : ''}></td>
-    <td class="num"><input type="number" step="1" value="${p.stock}" data-f="stock" ${p.track_stock ? '' : 'disabled'}></td>
+    <td class="num">
+      <div class="price-cell">
+        <input type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" data-f="price">
+        <!-- The same number means two different things depending on the column
+             beside it, so the unit is spelled out rather than implied. -->
+        <span class="unit-hint" data-f="unit-hint">${p.track_stock ? 'c/u' : '/kg'}</span>
+      </div>
+    </td>
+    <td>
+      <select data-f="tracked">
+        <option value="pza" ${p.track_stock ? 'selected' : ''}>Por pieza</option>
+        <option value="kg" ${p.track_stock ? '' : 'selected'}>Por kilo</option>
+      </select>
+    </td>
+    <td class="num">
+      <input type="number" step="1" value="${p.track_stock ? p.stock : ''}"
+             placeholder="se pesa" data-f="stock" ${p.track_stock ? '' : 'disabled'}>
+    </td>
     <td class="actions">
       <button class="btn" data-a="photo">Foto</button>
       ${p.active
@@ -428,7 +549,7 @@ function productRow(p) {
       name: field('name').value.trim(),
       barcode: field('barcode').value.trim() || null,
       priceCents: Math.round(Number(field('price').value) * 100),
-      trackStock: field('tracked').checked,
+      trackStock: field('tracked').value === 'pza',
       stock: typedStock === originalStock ? undefined : typedStock,
     }
   }
@@ -444,10 +565,15 @@ function productRow(p) {
     el.addEventListener('change', markDirty)
   }
 
-  // Goods sold loose have no unit count, so the quantity box goes dead the
-  // moment tracking is switched off.
+  // Switching to por kilo used to do one visible thing — grey out the quantity
+  // box — which was the least important of the three things it actually does.
+  // Now the row says all of them: the count goes away, the quantity says why,
+  // and the price relabels itself as a price per kilo.
   field('tracked').addEventListener('change', (e) => {
-    field('stock').disabled = !e.target.checked
+    const byPiece = e.target.value === 'pza'
+    field('stock').disabled = !byPiece
+    if (!byPiece) field('stock').value = ''
+    field('unit-hint').textContent = byPiece ? 'c/u' : '/kg'
   })
 
   /* ---------------------------------------------------------------- actions */
@@ -881,20 +1007,195 @@ $('purge-now').onclick = async () => {
   loadMaintenance()
 }
 
+/* --------------------------------------------------------------- reports */
+
+const dayLabel = (day) => {
+  // Parsed at midday so the label never slips a day: 'YYYY-MM-DD' alone is
+  // parsed as UTC midnight, which is the previous evening here.
+  const d = new Date(`${day}T12:00:00`)
+  return d.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })
+}
+
+/**
+ * A bar per bucket, sized against the busiest one.
+ *
+ * Scaled to the range's own maximum rather than to a fixed peso ceiling: the
+ * question this answers is "which days were the good ones", which is a question
+ * about the shape, and a fixed scale flattens a quiet week into nothing.
+ */
+function drawChart(el, buckets, label) {
+  const max = Math.max(1, ...buckets.map((b) => b.totalCents))
+  // Thirty labels do not fit across the width, and thirty truncated ones
+  // ("lun 2…", "mar 2…") are worse than none: they cost the same space and
+  // name nothing. Every nth is labelled instead, and the rest carry their day
+  // in the tooltip, where there is room for the whole thing.
+  const every = Math.ceil(buckets.length / 10)
+
+  el.replaceChildren(...buckets.map((b, i) => {
+    const bar = document.createElement('div')
+    bar.className = 'bar'
+    bar.title = `${label(b)} · ${money(b.totalCents)} · ${b.saleCount} ventas`
+    const shown = i % every === 0 || i === buckets.length - 1 ? label(b) : ''
+    bar.innerHTML = `
+      <span class="bar-fill" style="height:${Math.round((b.totalCents / max) * 100)}%"></span>
+      <span class="bar-label">${escapeHtml(shown)}</span>`
+    return bar
+  }))
+}
+
+function reportRange() {
+  return { from: $('rep-from').value, to: $('rep-to').value }
+}
+
+async function loadReport() {
+  const { from, to } = reportRange()
+  const query = from && to ? `?from=${from}&to=${to}` : ''
+  const r = await api(`/api/report${query}`)
+
+  $('rep-from').value = r.from
+  $('rep-to').value = r.to
+
+  $('rep-totals').innerHTML = `
+    <div><span>VENDIDO</span><strong>${money(r.totals.totalCents)}</strong></div>
+    <div><span>EFECTIVO</span><strong>${money(r.totals.cashCents)}</strong></div>
+    <div><span>TARJETA</span><strong>${money(r.totals.cardCents)}</strong></div>
+    <div><span>VENTAS</span><strong>${r.totals.saleCount}</strong></div>
+    <div><span>TICKET PROMEDIO</span><strong>${money(r.totals.averageTicketCents)}</strong></div>
+    ${r.movements.outCents > 0 || r.movements.inCents > 0
+      ? `<div><span>ENTRADAS / SALIDAS</span><strong>${money(r.movements.inCents)} / ${money(r.movements.outCents)}</strong></div>`
+      : ''}`
+
+  drawChart($('rep-days'), r.days, (b) => dayLabel(b.day))
+  drawChart($('rep-hours'), r.hours, (b) => `${b.hour}h`)
+
+  $('rep-top').replaceChildren(...r.topProducts.map((p) => {
+    const tr = document.createElement('tr')
+    const qty = p.unit === 'kg' ? `${p.qty.toFixed(3)} kg` : String(p.qty)
+    tr.innerHTML = `<td>${escapeHtml(p.name)}</td>
+                    <td class="num">${qty}</td>
+                    <td class="num hide-sm">${p.lines}</td>
+                    <td class="num"><strong>${money(p.totalCents)}</strong></td>`
+    return tr
+  }))
+}
+
+/** Downloads through fetch, because the export routes need the bearer header. */
+async function downloadCsv(name) {
+  const { from, to } = reportRange()
+  try {
+    const res = await fetch(`/api/export/${name}?from=${from}&to=${to}`, {
+      headers: { Authorization: `Bearer ${KEY}` },
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    const url = URL.createObjectURL(await res.blob())
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${name.replace('.csv', '')}-${from}_${to}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    note($('rep-status'), `Error: ${err.message}`, 6000)
+  }
+}
+
+/* -------------------------------------------------------------- qué falta */
+
+let faltaRows = []
+
+async function loadReorder() {
+  const below = Number($('falta-below').value || 0)
+  const days = Number($('falta-days').value || 30)
+  const r = await api(`/api/reorder?below=${below}&days=${days}`)
+  faltaRows = r.products
+
+  $('falta-body').replaceChildren(...r.products.map((p) => {
+    const tr = document.createElement('tr')
+    // Out of stock and oversold are different news and are marked differently:
+    // one means the shelf is empty, the other that the books are wrong.
+    const stockCell = p.stock < 0
+      ? `<span class="short">${p.stock}</span>`
+      : p.stock === 0
+        ? '<span class="short">0</span>'
+        : `<span class="stock-low">${p.stock}</span>`
+
+    const cover = p.daysOfCover === null
+      ? '<span class="muted">no se ha vendido</span>'
+      : p.daysOfCover < 1
+        ? '<span class="short">menos de un día</span>'
+        : `${p.daysOfCover} días`
+
+    tr.innerHTML = `<td>${escapeHtml(p.name)}</td>
+                    <td class="num">${stockCell}</td>
+                    <td class="num hide-sm">${Number(p.soldInWindow).toFixed(0)}</td>
+                    <td class="num">${cover}</td>
+                    <td class="num hide-sm">${money(p.priceCents)}</td>`
+    return tr
+  }))
+
+  if (r.products.length === 0) {
+    note($('falta-status'), 'Nada por surtir: todo está por encima del mínimo.', 5000)
+  }
+}
+
+/**
+ * The list as text, for pasting into WhatsApp on the way to the supplier.
+ * That is what this screen is actually for, and a table on a laptop at home is
+ * not something anyone carries to the bodega.
+ */
+async function copyReorder() {
+  if (faltaRows.length === 0) return note($('falta-status'), 'No hay nada que copiar', 3000)
+  const text = faltaRows
+    .map((p) => `• ${p.name} (quedan ${p.stock})`)
+    .join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    note($('falta-status'), `${faltaRows.length} productos copiados`, 3000)
+  } catch {
+    // Clipboard access needs a secure context; over plain http on a LAN it is
+    // simply not there, so the list is shown to be copied by hand instead.
+    note($('falta-status'), text, 15000)
+  }
+}
+
 /* ----------------------------------------------------------------- wiring */
 
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
     document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)))
-    for (const view of ['products', 'sales', 'cortes', 'movs', 'mant']) {
+    for (const view of ['products', 'sales', 'cortes', 'movs', 'report', 'falta', 'mant']) {
       $(`view-${view}`).classList.toggle('hidden', view !== tab.dataset.view)
     }
     if (tab.dataset.view === 'sales') loadSales()
     if (tab.dataset.view === 'cortes') loadCortes()
     if (tab.dataset.view === 'movs') loadMovements()
+    if (tab.dataset.view === 'report') loadReport()
+    if (tab.dataset.view === 'falta') loadReorder()
     if (tab.dataset.view === 'mant') loadMaintenance()
   }
 })
+
+$('rep-apply').onclick = loadReport
+$('falta-apply').onclick = loadReorder
+$('falta-copy').onclick = copyReorder
+
+for (const btn of document.querySelectorAll('[data-range]')) {
+  btn.onclick = () => {
+    // Dates are built in the browser's own local time, which is the shop's
+    // clock on the machine in the shop — the same calendar the server buckets
+    // by, so "hoy" means the same day on both ends.
+    const days = Number(btn.dataset.range)
+    const iso = (d) => d.toLocaleDateString('en-CA')
+    const to = new Date()
+    const from = new Date(to.getTime() - days * 86400000)
+    $('rep-from').value = iso(from)
+    $('rep-to').value = iso(to)
+    loadReport()
+  }
+}
+
+for (const btn of document.querySelectorAll('[data-csv]')) {
+  btn.onclick = () => downloadCsv(btn.dataset.csv)
+}
 
 $('add').onclick = async () => {
   const name = $('new-name').value.trim()
@@ -906,7 +1207,7 @@ $('add').onclick = async () => {
       name,
       priceCents: Math.round(Number($('new-price').value || 0) * 100),
       stock: Number($('new-stock').value || 0),
-      trackStock: $('new-tracked').checked,
+      trackStock: $('new-sold-by').value === 'pza',
     }),
   })
   $('new-name').value = ''; $('new-price').value = ''; $('new-stock').value = ''

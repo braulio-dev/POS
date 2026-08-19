@@ -41,6 +41,10 @@ const PC850 = {
   'Á': 0xb5, 'É': 0x90, 'Í': 0xd6, 'Ó': 0xe0, 'Ú': 0xe9,
   'ñ': 0xa4, 'Ñ': 0xa5, 'ü': 0x81, 'Ü': 0x9a,
   '¿': 0xa8, '¡': 0xad, '°': 0xf8, 'º': 0xa7, 'ª': 0xa6,
+  // `columns` truncates with a real ellipsis, which PC850 does not have. Left
+  // to the generic fallback it printed as "?", so a clipped line read as a
+  // character the printer could not handle rather than as a clipped line.
+  '…': 0x2e,
 }
 
 function encode(text) {
@@ -155,7 +159,7 @@ function buildReceipt(sale, storeName = 'Abarrotes "El Paisa"') {
 
   for (const item of sale.items) {
     const qty = Number(item.qty) || 0
-    // Lines rung up before granel existed carry neither field, and were piezas
+    // Lines rung up before weights existed carry neither field, and were piezas
     // priced at unit x qty — which is what these fallbacks reproduce.
     const lineTotal = item.lineTotalCents ?? Math.round(item.unitPriceCents * qty)
 
@@ -283,6 +287,21 @@ function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
     // Printed negative rather than as a bare figure: it is the only row on the
     // slip that subtracts, and a reader adding the column up must see that.
     if (cashOut > 0) movementLines.push(line(columns('SALIDAS', money(-cashOut))))
+
+    // Each movement by name, indented under its total. A signature under a lump
+    // "SALIDAS $380" asks someone to sign for something they cannot check; the
+    // reasons are the whole difference between a number and an explanation.
+    //
+    // The reason only, not who recorded it: 32 columns will not hold a reason,
+    // a name and an amount, and truncating produced "Pago de tortillas (L…"
+    // — a line that has spent its width on the half nobody needed. The name is
+    // on the cut's CAJERO line and in the admin page either way, while the
+    // amount is what is being signed for and always survives.
+    for (const m of corte.movements || []) {
+      const sign = m.kind === 'out' ? '-' : '+'
+      movementLines.push(line(columns(` ${m.reason}`, `${sign}${money(m.amountCents)}`)))
+    }
+
     movementLines.push(line(rule()))
   }
 

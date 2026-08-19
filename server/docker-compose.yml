@@ -26,6 +26,10 @@ services:
       PORT: 8787
       POS_DATA_DIR: /data
 
+      # The shop's own clock, used to bucket sales into days and hours for the
+      # Reportes tab. UTC would file the evening's sales under tomorrow.
+      POS_TZ: ${POS_TZ:-America/Mexico_City}
+
       # Every 5 minutes for now; change to 1d when the shop has been running a
       # while. Units: s, m, h, d.
       POS_BACKUP_ENABLED: ${POS_BACKUP_ENABLED:-1}

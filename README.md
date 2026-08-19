@@ -32,7 +32,7 @@ quietly operate on `%APPDATA%/Electron` instead.
     electron/terminal.cjs  card terminal drivers (manual / Clip / Mercado Pago)
     src/lib/tender.ts      payment + tender policy <- has an open TODO
     src/lib/stock.ts       out-of-stock policy     <- has an open TODO
-    src/lib/weight.ts      granel policy: what a kilo costs, and what $50 weighs
+    src/lib/weight.ts      por-kilo policy: what a kilo costs, and what $50 weighs
     src/lib/money.ts       integer-cent maths and formatting
     electron/ipc.cjs       every renderer-reachable channel, shared with the harness
     electron/escpos.cjs    receipt + corte byte builder for the 58mm printer
@@ -50,10 +50,10 @@ process; the renderer can only ever ask "is this right?". The same password
 guards the Inventario screen, since changing what the shelf claims to hold is an
 owner action rather than a cashier one.
 
-Tabs: **General** (store name), **Impresora**, **Corte** (cash threshold, fondo
-de caja and the low-stock mark), **Terminal** (card payments),
-**Sincronización**, **Respaldos** (the server's backup list, with a "respaldar
-ahora" button), **Seguridad**.
+Tabs: **General** (store name), **Impresora**, **Báscula** (how scale labels are
+encoded), **Corte** (cash threshold, fondo de caja and the low-stock mark),
+**Terminal** (card payments), **Sincronización**, **Respaldos** (the server's
+backup list, with a "respaldar ahora" button), **Seguridad**.
 
 Two header buttons are deliberately *not* behind the password: **Tickets**
 (reprinting) and **Entradas y salidas** (cash movements). Neither is an owner
@@ -99,13 +99,20 @@ verified against a live device** — check them against the credentials Clip
 issues your store before turning "mandar el monto a la terminal" on. Manual
 capture needs none of this and is complete as shipped.
 
-## Selling by weight (granel)
+## Selling by weight (por kilo)
 
-**A product without Inventario is sold by the kilo.** That is the whole rule,
-and it is deliberately the switch that already existed rather than a second one:
-`track_stock = 0` always meant "this has no pieces to count", and a thing with
-no pieces has to be measured some other way. Ticking the box means pieces and a
-price per piece; unticking it means kilos and a price per kilo.
+Every product answers one question — **¿cómo se vende?** — with one of two
+answers: **por pieza** or **por kilo**. It is deliberately the flag that already
+existed (`track_stock`) rather than a second one: "this has no pieces to count"
+and "this is measured some other way" are the same fact, and two switches that
+must agree eventually will not.
+
+It used to be a checkbox labelled *Inventario*, which named the database column
+rather than the decision, and whose unticked state was visible only as a
+greyed-out quantity box. Both screens and the admin page now show two labelled
+options, because the choice settles three things at once — whether a count is
+kept, whether the price means a piece or a kilo, and whether the till asks for a
+weight at the counter — and a checkbox can only ever label one of them.
 
 Tapping such a product does not add a line — there is no "one" frijol. It opens
 the scale screen, which takes the sale from either end of the counter
@@ -132,6 +139,29 @@ rather than editing a number they cannot see.
 Stock is never moved by a weight line, from either side: the product is
 untracked, and the line's own unit says kg. Both have to hold before a count
 changes.
+
+### Scale labels
+
+A scale that prints labels puts the measurement inside the barcode, as an
+EAN-13 in the `2` range GS1 reserves for codes a shop assigns itself:
+
+    2X IIIII VVVVV C     flag · item code · grams or centavos · check digit
+
+Turn it on in Configuración → Báscula, where the one thing that has to be
+declared is **which of the two** `VVVVV` holds — nothing in the label says, and
+reading a price as a weight would sell 4.5 kg of ham to a customer who asked for
+$45 of it. That is why it ships off rather than guessing. The product is found
+by its five-digit item code, registered in the product's barcode field either
+bare or with the label's leading digits.
+
+The check digit is deliberately not verified: scales disagree about how it is
+computed, and rejecting a label the scanner read perfectly well would send the
+cashier back to typing for nothing. A bad digit surfaces as an unknown item
+code, which the register already handles.
+
+A real barcode always wins first. Scale codes live in the range a shop assigns
+itself, so a product deliberately registered with one of those codes is never
+hijacked by the decoder underneath it.
 
 ## Inventory
 
@@ -280,12 +310,48 @@ or a payment method the sale does not have on file. It comes out stamped
 **\*\*\* COPIA \*\*\*** under the header, so it cannot be handed over — or added
 up at the end of the week — as a second sale.
 
+## Reports and the shopping list
+
+Two tabs on the admin page, both reading the history the register has already
+pushed up. Nothing new is recorded for them.
+
+**Reportes** takes a date range (with Hoy / 7 días / 30 días shortcuts) and
+answers: what was sold, split cash against card, the average ticket, sales per
+day, sales per hour of the day, and what sells best. Ventas, cortes and
+movimientos each export as CSV over the same range, written with a BOM because
+the person opening them opens them in Excel, and Excel reads a BOM-less UTF-8
+file as Latin-1 and turns every *Jamón* into *JamÃ³n*.
+
+Two decisions worth knowing about:
+
+- **Days are the shop's days.** Sales are stored as UTC instants, which is the
+  only sane thing to store, but "how did we do on Tuesday" is a question about
+  the calendar on the wall. In Mexico City that is six hours off, so bucketing
+  on the raw timestamp files every sale after 6pm under the following day and
+  makes both days wrong. Set `POS_TZ` on the server if the shop is somewhere
+  else; it defaults to `America/Mexico_City`.
+- **Top sellers rank by money, not by units.** Units cannot be ranked against
+  each other at all once anything is sold by weight: one line counts kilos, the
+  next counts pieces, and "37 against 37" compares nothing. Revenue means the
+  same thing on every line, so it does the ranking, and each row still shows its
+  own quantity in its own unit.
+
+**Qué falta** is the list to take to the supplier: everything at or below the
+low mark, ordered by **what runs out first** rather than by what has the
+smallest number. Three left of something selling thirty a day is an emergency;
+three left of something selling one a week is not, and a list sorted by count
+puts them in the wrong order. Empty and oversold shelves sort to the top, and
+"Copiar lista" puts it on the clipboard as text, because the trip to the bodega
+happens with a phone rather than with this table.
+
+Products sold por kilo are absent from it by design. They keep no count, so they
+would sit at zero forever and bury the rows that can actually be acted on —
+the same reasoning that keeps them from reporting AGOTADO at the till.
+
 ## Not built yet
 
 Editing and deleting products from the register's own UI (the browser admin page
-on the server does both), voids and refunds, and scale barcodes (the EAN-13
-codes beginning with `2` that carry the weight or price in their digits — weight
-is typed by hand today).
+on the server does both), and voids and refunds.
 
 Demo product photos come from Wikimedia under CC licences — fine as
 placeholders, but shoot the real shelf before this runs the store.

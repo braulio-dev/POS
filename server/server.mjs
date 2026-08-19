@@ -396,6 +396,313 @@ function applyMovement(payload, storeId) {
   return true
 }
 
+/* -------------------------------------------------------------- reporting */
+
+/**
+ * The shop's own timezone, which is not UTC and cannot be ignored.
+ *
+ * Sales are stored as UTC instants — the only sane thing to store — but "how
+ * did we do on Tuesday" is a question about the shop's own calendar. In
+ * Mexico City that is six hours off, so bucketing on the raw ISO string files
+ * every sale after 6pm under the following day and makes both days wrong. Every
+ * boundary below therefore goes through this.
+ */
+const TZ = process.env.POS_TZ || 'America/Mexico_City'
+
+/** The shop-local calendar day of an instant, as YYYY-MM-DD. */
+function localDay(iso) {
+  // 'en-CA' formats as YYYY-MM-DD, which sorts correctly as a string.
+  return new Date(iso).toLocaleDateString('en-CA', { timeZone: TZ })
+}
+
+/** The shop-local hour of an instant, 0–23. */
+function localHour(iso) {
+  return Number(new Date(iso).toLocaleString('en-US', {
+    timeZone: TZ, hour: '2-digit', hour12: false,
+  }))
+}
+
+const todayLocal = () => localDay(new Date().toISOString())
+
+function daysAgoLocal(n) {
+  const d = new Date(Date.now() - n * 86400000)
+  return localDay(d.toISOString())
+}
+
+/**
+ * Rows in a shop-local date range.
+ *
+ * SQL does the coarse cut on the raw timestamps with a day of slack on each
+ * side, then JS filters exactly on the local day. The slack is what makes the
+ * two agree: a sale at 23:30 local on the last day of the range is already the
+ * next day in UTC, and a tight SQL bound would drop it before JS ever saw it.
+ */
+function rowsInRange(table, from, to) {
+  const pad = 2 * 86400000
+  const lo = new Date(`${from}T00:00:00Z`).getTime() - pad
+  const hi = new Date(`${to}T00:00:00Z`).getTime() + pad
+
+  return db.prepare(
+    `SELECT * FROM ${table} WHERE created_at >= ? AND created_at <= ? ORDER BY created_at`
+  ).all(new Date(lo).toISOString(), new Date(hi).toISOString())
+    .filter((r) => {
+      const day = localDay(r.created_at)
+      return day >= from && day <= to
+    })
+}
+
+/** `from`/`to` as YYYY-MM-DD, defaulting to the last 30 days. */
+function readRange(params) {
+  const valid = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
+  const to = valid(params.get('to')) ? params.get('to') : todayLocal()
+  const from = valid(params.get('from')) ? params.get('from') : daysAgoLocal(29)
+  return from <= to ? { from, to } : { from: to, to: from }
+}
+
+/**
+ * Everything the Reportes tab shows, for one date range.
+ *
+ * Top sellers are ranked by **money**, not by units, because units cannot be
+ * ranked against each other here at all: a line sold por kilo carries kilos in
+ * its qty and a line sold por pieza carries pieces, and "37" of one against
+ * "37" of the other is a comparison of nothing. Revenue is the one figure that
+ * means the same thing on every line, so the ranking uses it and each row still
+ * shows its own quantity in its own unit.
+ *
+ * Items are grouped by the **name snapshotted on the sale**, not by product id:
+ * ids are local to a register, so two tills would double-count, and a product
+ * deleted last month would vanish from a report about last month.
+ */
+function buildReport(params) {
+  const { from, to } = readRange(params)
+  const sales = rowsInRange('sales', from, to)
+  const movements = rowsInRange('cash_movements', from, to)
+
+  const totals = { totalCents: 0, cashCents: 0, cardCents: 0, saleCount: 0, cardSales: 0 }
+  const byDay = new Map()
+  const byHour = Array.from({ length: 24 }, () => ({ totalCents: 0, saleCount: 0 }))
+  const products = new Map()
+
+  for (const s of sales) {
+    const card = s.card_cents ?? 0
+    const cash = s.cash_cents ?? s.total_cents - card
+
+    totals.totalCents += s.total_cents
+    totals.cashCents += cash
+    totals.cardCents += card
+    totals.saleCount += 1
+    if (card > 0) totals.cardSales += 1
+
+    const day = localDay(s.created_at)
+    const bucket = byDay.get(day) || { day, totalCents: 0, saleCount: 0 }
+    bucket.totalCents += s.total_cents
+    bucket.saleCount += 1
+    byDay.set(day, bucket)
+
+    const hour = byHour[localHour(s.created_at)]
+    if (hour) {
+      hour.totalCents += s.total_cents
+      hour.saleCount += 1
+    }
+
+    let items = []
+    try {
+      items = JSON.parse(s.items || '[]')
+    } catch {
+      // One malformed row must not take the whole report down with it.
+      items = []
+    }
+
+    for (const it of items) {
+      const name = String(it.name ?? '—')
+      const row = products.get(name) || { name, unit: 'pza', qty: 0, totalCents: 0, lines: 0 }
+      const qty = Number(it.qty) || 0
+      row.unit = it.unit === 'kg' ? 'kg' : row.unit
+      row.qty += qty
+      row.totalCents += Number(it.lineTotalCents ?? (Number(it.unitPriceCents) || 0) * qty)
+      row.lines += 1
+      products.set(name, row)
+    }
+  }
+
+  const days = []
+  // Every day in the range, including the ones with no sales at all. A chart
+  // that silently omits the closed Sunday draws a week that looks continuous
+  // and is not, which is the one thing a trend line must never do.
+  for (let t = new Date(`${from}T12:00:00Z`).getTime();
+       localDay(new Date(t).toISOString()) <= to;
+       t += 86400000) {
+    const day = localDay(new Date(t).toISOString())
+    days.push(byDay.get(day) || { day, totalCents: 0, saleCount: 0 })
+  }
+
+  const movementTotals = movements.reduce((acc, m) => ({
+    inCents: acc.inCents + (m.kind === 'in' ? m.amount_cents : 0),
+    outCents: acc.outCents + (m.kind === 'out' ? m.amount_cents : 0),
+  }), { inCents: 0, outCents: 0 })
+
+  return {
+    from,
+    to,
+    timezone: TZ,
+    totals: {
+      ...totals,
+      // Rounded to the centavo: an average is presented as money, and money
+      // with a fraction of a centavo on it reads as a bug.
+      averageTicketCents: totals.saleCount === 0
+        ? 0
+        : Math.round(totals.totalCents / totals.saleCount),
+    },
+    days,
+    hours: byHour.map((h, hour) => ({ hour, ...h })),
+    topProducts: [...products.values()]
+      .sort((a, b) => b.totalCents - a.totalCents)
+      .slice(0, 20),
+    movements: movementTotals,
+  }
+}
+
+/**
+ * What to buy: what is at or below the low mark, urgent first.
+ *
+ * "Urgent" is days of cover, not the raw count — three left of something that
+ * sells thirty a day is an emergency, and three left of something that sells
+ * one a week is fine. Velocity comes from the same window the report uses, so
+ * the two screens never disagree about how fast something moves.
+ *
+ * Products sold por kilo are absent by design: they carry no unit count to be
+ * below a threshold, and listing them at a permanent zero is exactly the noise
+ * the count switch exists to avoid. Knowing when the frijol sack is low is a
+ * different mechanism, and pretending otherwise would bury the rows that can
+ * actually be acted on.
+ */
+function buildReorder(params) {
+  const below = Math.max(0, Math.trunc(Number(params.get('below')) || 3))
+  const windowDays = Math.min(365, Math.max(1, Math.trunc(Number(params.get('days')) || 30)))
+  const to = todayLocal()
+  const from = daysAgoLocal(windowDays - 1)
+
+  const sold = new Map()
+  for (const s of rowsInRange('sales', from, to)) {
+    let items = []
+    try {
+      items = JSON.parse(s.items || '[]')
+    } catch {
+      items = []
+    }
+    for (const it of items) {
+      const name = String(it.name ?? '')
+      sold.set(name, (sold.get(name) || 0) + (Number(it.qty) || 0))
+    }
+  }
+
+  const rows = db.prepare(
+    'SELECT uuid, name, stock, price_cents FROM products WHERE active = 1 AND track_stock = 1'
+  ).all()
+    .filter((p) => p.stock <= below)
+    .map((p) => {
+      const soldInWindow = sold.get(p.name) || 0
+      const perDay = soldInWindow / windowDays
+      return {
+        uuid: p.uuid,
+        name: p.name,
+        stock: p.stock,
+        priceCents: p.price_cents,
+        soldInWindow,
+        // Null rather than Infinity for something that has not sold at all:
+        // "never" is a fact about the product, and JSON has no Infinity to
+        // carry it with anyway.
+        daysOfCover: perDay > 0 ? Math.round((p.stock / perDay) * 10) / 10 : null,
+      }
+    })
+    .sort((a, b) => {
+      // Oversold and empty shelves first, then whatever runs out soonest, then
+      // by how fast it sells so a dead product never outranks a live one.
+      if ((a.stock <= 0) !== (b.stock <= 0)) return a.stock <= 0 ? -1 : 1
+      const ac = a.daysOfCover === null ? Infinity : a.daysOfCover
+      const bc = b.daysOfCover === null ? Infinity : b.daysOfCover
+      if (ac !== bc) return ac - bc
+      return b.soldInWindow - a.soldInWindow
+    })
+
+  return { below, windowDays, from, to, products: rows }
+}
+
+/* ------------------------------------------------------------------- CSV */
+
+const pesos = (cents) => (Math.round(Number(cents) || 0) / 100).toFixed(2)
+
+/**
+ * One CSV cell.
+ *
+ * Quoted whenever it contains a separator, a quote or a newline — a product
+ * called "Coca 600ml, 6 pack" would otherwise silently become two columns and
+ * shift every field after it on that row.
+ */
+function csvCell(value) {
+  const s = value === null || value === undefined ? '' : String(value)
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+const csvRows = (rows) => rows.map((r) => r.map(csvCell).join(',')).join('\r\n')
+
+function itemsLabel(json) {
+  let items = []
+  try {
+    items = JSON.parse(json || '[]')
+  } catch {
+    return ''
+  }
+  return items.map((i) => (i.unit === 'kg'
+    ? `${Number(i.qty).toFixed(3)} kg ${i.name}`
+    : `${i.qty}x ${i.name}`)).join(' · ')
+}
+
+function salesCsv(params) {
+  const { from, to } = readRange(params)
+  return csvRows([
+    ['fecha', 'caja', 'metodo', 'total', 'efectivo', 'tarjeta', 'referencia', 'articulos'],
+    ...rowsInRange('sales', from, to).map((s) => {
+      const card = s.card_cents ?? 0
+      return [
+        s.created_at, s.store_id, s.payment_method, pesos(s.total_cents),
+        pesos(s.cash_cents ?? s.total_cents - card), pesos(card),
+        s.terminal_reference || '', itemsLabel(s.items),
+      ]
+    }),
+  ])
+}
+
+function cortesCsv(params) {
+  const { from, to } = readRange(params)
+  return csvRows([
+    ['fecha', 'caja', 'cajero', 'ventas', 'vendido', 'tarjeta', 'efectivo',
+     'fondo_inicial', 'entradas', 'salidas', 'esperado', 'contado', 'diferencia', 'fondo_dejado'],
+    ...rowsInRange('cortes', from, to).map((c) => [
+      c.created_at, c.store_id, c.cashier || '', c.sale_count,
+      pesos(c.total_cents), pesos(c.card_cents), pesos(c.cash_cents),
+      pesos(c.float_start_cents), pesos(c.cash_in_cents), pesos(c.cash_out_cents),
+      pesos(c.expected_cents),
+      // Empty, not zero: this cut was taken before anyone was asked to count,
+      // and a 0.00 in a spreadsheet column is a claim that they counted nothing.
+      c.counted_cents === null || c.counted_cents === undefined ? '' : pesos(c.counted_cents),
+      c.difference_cents === null || c.difference_cents === undefined ? '' : pesos(c.difference_cents),
+      pesos(c.float_left_cents),
+    ]),
+  ])
+}
+
+function movementsCsv(params) {
+  const { from, to } = readRange(params)
+  return csvRows([
+    ['fecha', 'caja', 'tipo', 'motivo', 'quien', 'monto'],
+    ...rowsInRange('cash_movements', from, to).map((m) => [
+      m.created_at, m.store_id, m.kind === 'out' ? 'salida' : 'entrada',
+      m.reason, m.person || '', pesos(m.amount_cents),
+    ]),
+  ])
+}
+
 /* ----------------------------------------------------- backups and purging */
 
 const state = {
@@ -896,6 +1203,32 @@ const server = http.createServer(async (req, res) => {
       }), { totalCents: 0, cashCents: 0, cardCents: 0, cardSales: 0 })
 
       return json(res, 200, { sales, totals })
+    }
+
+    if (route === '/api/report' && method === 'GET') {
+      return json(res, 200, buildReport(url.searchParams))
+    }
+
+    if (route === '/api/reorder' && method === 'GET') {
+      return json(res, 200, buildReorder(url.searchParams))
+    }
+
+    if (route.startsWith('/api/export/') && method === 'GET') {
+      const what = route.slice('/api/export/'.length)
+      const csv = what === 'ventas.csv' ? salesCsv(url.searchParams)
+        : what === 'cortes.csv' ? cortesCsv(url.searchParams)
+        : what === 'movimientos.csv' ? movementsCsv(url.searchParams)
+        : null
+      if (csv === null) return json(res, 404, { error: 'not found' })
+
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${what}"`,
+      })
+      // A BOM, because the person opening this opens it in Excel, and Excel
+      // reads a UTF-8 file without one as Latin-1 — every "Jamón" becomes
+      // "JamÃ³n" and the owner concludes the export is broken.
+      return res.end(`﻿${csv}`)
     }
 
     if (route === '/api/cortes' && method === 'GET') {

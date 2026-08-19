@@ -67,7 +67,7 @@ function openDatabase(dataDir) {
     -- The qty column is pieces for a normal product and kilos for one sold by
     -- weight, so it is the one number here allowed to be fractional. SQLite
     -- stores 1.35 as a REAL despite the INTEGER affinity below (affinity only
-    -- converts when the round trip is lossless), which is what lets granel
+    -- converts when the round trip is lossless), which is what lets weighed sales
     -- arrive without rebuilding a table full of a year of real sales.
     CREATE TABLE IF NOT EXISTS sale_items (
       id               INTEGER PRIMARY KEY,
@@ -244,7 +244,7 @@ function migrateSales() {
 /**
  * Line items gained a unit and their own money once goods could be sold loose.
  *
- *   unit              'pza' or 'kg'. Everything sold before granel existed was
+ *   unit              'pza' or 'kg'. Everything sold before weights existed was
  *                     sold by the piece — that was the only thing the register
  *                     could ring up — so defaulting the column is exact rather
  *                     than a guess.
@@ -330,6 +330,12 @@ function seedDefaults() {
   // would make the very first reconciliation wrong in the store's favour.
   seed.run('cashFloatCents', '0')
 
+  // Scale labels, off until someone says which way their scale encodes them.
+  // A price read as a weight would sell 4.5 kg of ham to a customer who asked
+  // for $45 of it, and no digit in the label says which one it is — so the
+  // register refuses to guess. See src/lib/weight.ts.
+  seed.run('scaleMode', 'off')
+
   // Card terminal. Defaults to 'manual': the cashier charges on the terminal's
   // own keypad and types the authorisation number back here. That needs no
   // credentials and no internet, so it works from the first launch — see
@@ -376,6 +382,23 @@ function findByBarcode(barcode) {
   return db.prepare(
     `SELECT ${PRODUCT_COLUMNS} FROM products WHERE barcode = ? AND active = 1`
   ).get(barcode)
+}
+
+/**
+ * Finds the product a scale label refers to.
+ *
+ * The label carries the five-digit item code the scale was programmed with, not
+ * the barcode printed on the shelf, so both of the ways an owner would
+ * reasonably register it are accepted: the bare code as typed into the scale
+ * ("01234"), or the label's leading digits as printed, in-store flag and all
+ * ("2001234"). Guessing wrong here costs a sale at the counter with a customer
+ * waiting; accepting both costs one extra bound parameter.
+ */
+function findByScaleCode(itemCode, prefix) {
+  return db.prepare(
+    `SELECT ${PRODUCT_COLUMNS} FROM products
+      WHERE barcode IN (?, ?) AND active = 1 LIMIT 1`
+  ).get(String(itemCode), String(prefix ?? itemCode))
 }
 
 /** Queues an outbox row. Callers are expected to already be inside a transaction. */
@@ -1096,6 +1119,9 @@ function cortePayload(row) {
  */
 function recordCorte({ cashier = null, countedCents = null, floatLeftCents = 0 } = {}) {
   const drawer = getCashDrawer()
+  // Read before the cut closes the period: afterwards `listMovements` answers
+  // for the new one, and these rows would be gone from its window.
+  const periodMovements = listMovements()
   const uuid = crypto.randomUUID()
   const createdAt = now()
   const who = String(cashier ?? '').trim().slice(0, 60) || null
@@ -1135,7 +1161,16 @@ function recordCorte({ cashier = null, countedCents = null, floatLeftCents = 0 }
     enqueue('corte', uuid, cortePayload(row), createdAt)
 
     db.exec('COMMIT')
-    return { ...cortePayload(row), deliveredCents: delivered }
+    // The movements ride along on the returned object but deliberately not in
+    // the synced payload: the cut already carries their totals, and the rows
+    // themselves sync as their own entity. This is for the slip about to be
+    // printed, which states them line by line — a signature under a lump sum
+    // of "salidas $380" asks someone to sign for something they cannot check.
+    return {
+      ...cortePayload(row),
+      deliveredCents: delivered,
+      movements: periodMovements,
+    }
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
@@ -1345,6 +1380,7 @@ module.exports = {
   listProducts,
   getProduct,
   findByBarcode,
+  findByScaleCode,
   createProduct,
   updateProduct,
   deactivateProduct,

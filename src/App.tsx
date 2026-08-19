@@ -16,7 +16,9 @@ import { WeightModal } from './components/WeightModal'
 import { CashMovementModal } from './components/CashMovementModal'
 import { TicketsModal } from './components/TicketsModal'
 import { checkStock } from './lib/stock'
-import { isSoldByWeight } from './lib/weight'
+import {
+  formatKg, isSoldByWeight, parseScaleBarcode, scaleLine, type ScaleMode,
+} from './lib/weight'
 import type { Tender } from './lib/tender'
 import { pos } from './lib/api'
 
@@ -133,6 +135,8 @@ export default function App() {
    */
   const addWeighed = useCallback((line: CartLine) => {
     setLines((prev) => [...prev, line])
+    // Closes the scale screen when one was open, and is a no-op for a label the
+    // scanner read straight into the ticket without opening anything.
     setOverlay({ kind: 'none' })
   }, [])
 
@@ -151,14 +155,56 @@ export default function App() {
   }, [])
 
   const handleScan = useCallback(async (code: string) => {
+    // A real barcode wins outright. Scale labels live in the range a shop
+    // assigns itself, so a product deliberately registered with one of those
+    // codes must not be hijacked by the decoder underneath.
     const product = await pos.findByBarcode(code)
     if (product) {
       addToCart(product)
-    } else {
-      // An unknown barcode is normal: new stock arrives before it's registered.
-      showToast(`Código no registrado: ${code}`)
+      return
     }
-  }, [addToCart, showToast])
+
+    /*
+     * A label the deli scale printed: the weight (or the price) is already in
+     * the digits, so the whole sale is one beep and nothing is typed. That is
+     * the entire point — the scale weighed it, and asking the cashier to read
+     * the number off the label and type it back in would be transcribing a fact
+     * the register was just handed.
+     */
+    const label = parseScaleBarcode(code, (settings?.scaleMode ?? 'off') as ScaleMode)
+    if (label) {
+      const weighed = await pos.findByScaleCode(label.itemCode, label.prefix)
+      if (!weighed) {
+        showToast(`Báscula: código ${label.itemCode} no registrado`)
+        return
+      }
+      if (!isSoldByWeight(weighed)) {
+        // The label says it was weighed and the catalogue says it is sold by the
+        // piece. Guessing which is right would either misprice the sale or
+        // silently sell a piece — so it says so and stops.
+        showToast(`${weighed.name} no se vende por kilo`)
+        return
+      }
+      const line = scaleLine(label, weighed.price_cents)
+      if (!line) {
+        showToast(`Báscula: no se pudo leer ${code}`)
+        return
+      }
+      addWeighed({
+        productId: weighed.id,
+        name: weighed.name,
+        unitPriceCents: weighed.price_cents,
+        qty: line.kg,
+        unit: 'kg',
+        lineTotalCents: line.totalCents,
+      })
+      showToast(`${weighed.name}: ${formatKg(line.kg)}`)
+      return
+    }
+
+    // An unknown barcode is normal: new stock arrives before it's registered.
+    showToast(`Código no registrado: ${code}`)
+  }, [addToCart, addWeighed, settings?.scaleMode, showToast])
 
   // The global scanner listener only runs on the sale screen. While a modal is
   // open the scanner should type into that modal's focused field instead.

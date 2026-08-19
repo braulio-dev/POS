@@ -5,6 +5,8 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('pos', {
   listProducts: () => ipcRenderer.invoke('products:list'),
   findByBarcode: (barcode) => ipcRenderer.invoke('products:findByBarcode', barcode),
+  findByScaleCode: (itemCode, prefix) =>
+    ipcRenderer.invoke('products:findByScaleCode', itemCode, prefix),
   createProduct: (input) => ipcRenderer.invoke('products:create', input),
   updateProduct: (id, input) => ipcRenderer.invoke('products:update', id, input),
   deactivateProduct: (id) => ipcRenderer.invoke('products:deactivate', id),

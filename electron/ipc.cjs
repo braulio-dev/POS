@@ -15,6 +15,8 @@ const terminal = require('./terminal.cjs')
 function registerIpc({ imageDir }) {
   ipcMain.handle('products:list', () => db.listProducts())
   ipcMain.handle('products:findByBarcode', (_e, barcode) => db.findByBarcode(barcode) ?? null)
+  ipcMain.handle('products:findByScaleCode', (_e, itemCode, prefix) =>
+    db.findByScaleCode(itemCode, prefix) ?? null)
   ipcMain.handle('products:create', (_e, input) => db.createProduct(input))
   ipcMain.handle('products:update', (_e, id, input) => db.updateProduct(id, input))
   ipcMain.handle('products:deactivate', (_e, id) => db.deactivateProduct(id))

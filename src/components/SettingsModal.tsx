@@ -3,11 +3,14 @@ import type { CorteRow, MaintenanceStatus, Settings, SyncStatus } from '../types
 import { formatMoney, parseAmount } from '../lib/money'
 import { pos } from '../lib/api'
 
-type Tab = 'general' | 'impresora' | 'corte' | 'terminal' | 'sync' | 'respaldos' | 'seguridad'
+type Tab =
+  | 'general' | 'impresora' | 'bascula' | 'corte' | 'terminal'
+  | 'sync' | 'respaldos' | 'seguridad'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'impresora', label: 'Impresora' },
+  { id: 'bascula', label: 'Báscula' },
   { id: 'corte', label: 'Corte' },
   { id: 'terminal', label: 'Terminal' },
   { id: 'sync', label: 'Sincronización' },
@@ -259,6 +262,50 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
                   Imprimir prueba
                 </button>
               </div>
+            </>
+          )}
+
+          {tab === 'bascula' && (
+            <>
+              <label className="field">
+                <span>ETIQUETAS DE LA BÁSCULA</span>
+                <select
+                  className="text-input"
+                  value={settings.scaleMode}
+                  onChange={(e) => update('scaleMode', e.target.value)}
+                >
+                  <option value="off">No usar (escribir el peso a mano)</option>
+                  <option value="weight">La etiqueta trae el PESO en gramos</option>
+                  <option value="price">La etiqueta trae el PRECIO</option>
+                </select>
+                <span className="muted-note">
+                  Las básculas que imprimen etiquetas guardan la medida dentro
+                  del código de barras, que empieza con 2. Al escanearlo, la caja
+                  agrega el producto ya pesado, sin teclear nada.
+                </span>
+              </label>
+
+              {/*
+                The choice cannot be inferred from the label — nothing in the
+                digits says which of the two the scale wrote — and getting it
+                backwards is expensive in a way that is not obvious until the
+                ticket prints. So the consequence is spelled out here, next to
+                the choice, rather than left in a manual nobody opens.
+              */}
+              <p className="muted-note">
+                <strong>Revisa cuál de las dos es.</strong> Si la báscula manda el
+                precio y aquí dice peso, una etiqueta de $45 de jamón se cobraría
+                como 4.5 kg. Pesa algo conocido, escanéalo, y comprueba que el
+                ticket diga lo mismo que la báscula.
+              </p>
+
+              <p className="muted-note">
+                El producto se busca por el <strong>código de artículo</strong>
+                {' '}de la báscula: los 5 dígitos que van después de los dos
+                primeros. Ponlo en el campo de código de barras del producto,
+                solo o con esos dos dígitos adelante — la caja acepta las dos
+                formas.
+              </p>
             </>
           )}
 

@@ -1022,7 +1022,7 @@ select.text-input { appearance: auto; }
   font-size: 14px;
 }
 
-/* ---------- Weighing (granel) ---------- */
+/* ---------- Weighing (venta por kilo) ---------- */
 
 /* Same frame as the product dialog: this is the same kind of moment — a few
    fields and one confirm — and a second dialog shape would make the cashier
@@ -1276,3 +1276,38 @@ select.text-input { appearance: auto; }
 }
 .change-reprint:hover { background: rgba(255, 255, 255, 0.14); }
 .change-print-note { margin: 8px 0 0; font-size: 14px; color: #dcedc8; }
+
+/* ---------- How a product is sold ---------- */
+
+/* Replaces a lone "Inventario" checkbox. A checkbox can only ever label its
+   ticked state, which left the unticked one — priced by the kilo, weighed at
+   the counter — as something you had to infer from a greyed-out quantity box.
+   Two named options say both halves out loud. */
+.sale-unit-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.sale-unit-option {
+  padding: 11px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+}
+.sale-unit-option.is-active {
+  border-color: var(--green);
+  background: var(--green-tint);
+  color: var(--green-dark);
+}
+
+/* Inside the inventory table, where the row height is the constraint. */
+.sale-unit-toggle.is-compact { gap: 3px; }
+.sale-unit-toggle.is-compact .sale-unit-option {
+  padding: 5px 4px;
+  font-size: 11px;
+  letter-spacing: 0.4px;
+}

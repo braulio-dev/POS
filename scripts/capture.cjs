@@ -42,8 +42,21 @@ const TYPE = `((el, value) => {
   el.dispatchEvent(new Event('input', { bubbles: true }));
 })`
 
+/**
+ * capturePage occasionally rejects with UnknownVizError when Chromium's GPU
+ * process is still coming up (or has just been restarted underneath us). It is
+ * transient and unrelated to what is being screenshotted, so one retry after a
+ * beat turns a dead run into a slightly slower one.
+ */
 async function shoot(win, name) {
-  const img = await win.capturePage()
+  let img
+  try {
+    img = await win.capturePage()
+  } catch (err) {
+    console.log(`retrying capture of ${name} after ${err.message}`)
+    await wait(1500)
+    img = await win.capturePage()
+  }
   fs.writeFileSync(path.join(OUT, `${name}.png`), img.toPNG())
   console.log('saved', name)
 }
@@ -67,7 +80,9 @@ app.whenReady().then(async () => {
     ['Papas', 5600, null, 14, true], ['Tortillas', 3000, null, 2, true],
     ['Cereal', 7000, null, 0, true], ['Coca 600ml', 2200, '7501055300150', 24, true],
     ['Pan Bimbo', 4500, null, 6, true], ['Leche 1L', 2800, null, 1, true],
-    ['Huevo Kg', 6400, null, 0, false], ['Frijol Kg', 3900, null, 0, false],
+    // Frijol carries the item code its scale is programmed with, so the label
+    // scanned further down resolves to it.
+    ['Huevo Kg', 6400, null, 0, false], ['Frijol Kg', 3900, '01234', 0, false],
     ['Jabon Zote', 2600, null, -3, true],
   ]) {
     if (!REAL) db.createProduct({ barcode, name, priceCents: price, imageFile: null, stock, trackStock: tracked })
@@ -75,6 +90,9 @@ app.whenReady().then(async () => {
 
   // A low corte threshold so one demo sale is enough to raise the banner.
   if (!REAL) db.setSetting('corteThresholdCents', '1000')
+  // Scale labels are off on a real register until the owner says which way
+  // their scale encodes them; the harness turns them on to exercise the path.
+  if (!REAL) db.setSetting('scaleMode', 'weight')
 
   registerIpc({ imageDir: IMAGE_DIR })
 
@@ -387,6 +405,23 @@ app.whenReady().then(async () => {
   console.log(weighedLine && weighedLine.includes('1.350 kg')
     ? `GRANEL PASS: cart line reads ${JSON.stringify(weighedLine)}`
     : `GRANEL FAIL: cart line ${JSON.stringify(weighedLine)}`)
+
+  // --- A label printed by the deli scale ----------------------------------
+  // 20 | 01234 | 01350 | 8  ->  item 01234, 1350 g. Nothing is typed: the scale
+  // already weighed it, and the register is being handed that fact.
+  for (const ch of '2001234013508') { sendChar(ch); await wait(6) }
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  await wait(700)
+
+  const scaleLines = await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.cart-row')].map((r) => r.textContent)
+  `)
+  const weighedByLabel = scaleLines.filter((t) => t.includes('Frijol')).length
+  console.log(weighedByLabel === 2
+    ? `BASCULA PASS: label rang itself up — ${JSON.stringify(scaleLines.at(-1))}`
+    : `BASCULA FAIL: ${JSON.stringify(scaleLines)}`)
+  await shoot(win, '14-scale-label')
 
   // --- Cash in and out ----------------------------------------------------
   await win.webContents.executeJavaScript(`${HEADER}('Entradas y salidas').click()`)

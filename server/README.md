@@ -276,6 +276,21 @@ routes. All except `/health` and `/` require `Authorization: Bearer <key>`.
 | `GET /api/maintenance` | Backup/purge status, used by the register's Respaldos tab. |
 | `POST /api/backup` | Snapshot now. |
 
+The admin page uses a few more. A replacement server does not need them for a
+register to work, only for the browser page to have anything to show:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/movements` | Cash in and out of the drawer, newest first, with totals. |
+| `GET /api/report?from=&to=` | Totals, per-day and per-hour buckets, and top sellers for a date range. |
+| `GET /api/reorder?below=&days=` | What to buy: at or below the mark, ordered by what runs out first. |
+| `GET /api/export/{ventas,cortes,movimientos}.csv?from=&to=` | The same ranges as CSV. |
+
+Dates in those routes are **shop-local** calendar days (`YYYY-MM-DD`), not UTC.
+Rows are stored as UTC instants and bucketed through `POS_TZ`, which defaults to
+`America/Mexico_City`; without that step every sale after 6pm lands on the wrong
+day and both days come out wrong.
+
 `POST /sync` request:
 
 ```json

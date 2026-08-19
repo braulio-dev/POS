@@ -122,9 +122,9 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
                   <th className="num">Precio</th>
                   <th
                     className="tracked-col"
-                    title="Marca lo que se cuenta por pieza. Desmárcalo para cosas a granel (por kilo)."
+                    title="Por pieza: se cuenta y el precio es de cada una. Por kilo: se pesa en la báscula y no se lleva conteo."
                   >
-                    Inventario
+                    Se vende
                   </th>
                   <th className="num">Cantidad</th>
                 </tr>
@@ -142,25 +142,42 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
                             door than the books ever had in. */}
                         {level === 'over' && <span className="recount-flag">recontar</span>}
                       </td>
-                      {/* A product without Inventario is sold by weight, so its
-                          price is a price per kilo and has to say so — the same
-                          number means two different things in this column. */}
+                      {/* A product sold por kilo prices a kilo, so the column
+                          has to say which it is — the same number means two
+                          different things depending on the cell beside it. */}
                       <td className="num">
                         {formatMoney(p.price_cents)}
                         {!tracked && <span className="muted-note"> /kg</span>}
                       </td>
                       <td className="tracked-col">
-                        {/* Off for goods sold by weight, so they stop reporting
-                            AGOTADO forever and drowning the real warnings. */}
-                        <input
-                          type="checkbox"
-                          checked={tracked}
-                          aria-label={`Llevar inventario de ${p.name}`}
-                          onChange={async (e) => {
-                            await pos.setTrackStock(p.id, e.target.checked)
-                            setProducts(await pos.listInventory())
-                          }}
-                        />
+                        {/* Both states visible at once, and both named. A lone
+                            checkbox could only ever say what the ticked state
+                            meant, which left "por kilo" as something you had to
+                            infer from a greyed-out quantity box. */}
+                        <div className="sale-unit-toggle is-compact">
+                          <button
+                            className={`sale-unit-option${tracked ? ' is-active' : ''}`}
+                            aria-pressed={tracked}
+                            onClick={async () => {
+                              if (tracked) return
+                              await pos.setTrackStock(p.id, true)
+                              setProducts(await pos.listInventory())
+                            }}
+                          >
+                            Pieza
+                          </button>
+                          <button
+                            className={`sale-unit-option${!tracked ? ' is-active' : ''}`}
+                            aria-pressed={!tracked}
+                            onClick={async () => {
+                              if (!tracked) return
+                              await pos.setTrackStock(p.id, false)
+                              setProducts(await pos.listInventory())
+                            }}
+                          >
+                            Kilo
+                          </button>
+                        </div>
                       </td>
                       <td className="num">
                         <div className="qty-editor">
@@ -170,7 +187,7 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
                             type="number"
                             step="1"
                             value={tracked ? value : ''}
-                            placeholder={tracked ? undefined : 'granel'}
+                            placeholder={tracked ? undefined : 'se pesa'}
                             disabled={!tracked}
                             onChange={(e) => setValue(p.id, e.target.value)}
                           />
@@ -186,11 +203,12 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
         </div>
 
         <p className="muted-note">
-          <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza.
-          Desmárcalo para lo que se vende <strong>a granel</strong> — frijol,
-          queso, jamón. Eso hace dos cosas: deja de contarlo (si no, saldría
-          siempre como AGOTADO) y su precio pasa a ser <strong>por kilo</strong>,
-          así que en la caja se pide el peso en vez de agregar una pieza.
+          <strong>Por pieza</strong>: se cuenta, y el precio es el de una pieza.
+          <br />
+          <strong>Por kilo</strong> para lo que se pesa — frijol, queso, jamón:
+          el precio pasa a ser por kilo, la caja pide el peso al venderlo, y deja
+          de contarse (si no, saldría siempre como AGOTADO y acabaríamos
+          ignorando los avisos que sí importan).
         </p>
 
         {status && <p className="settings-status">{status}</p>}

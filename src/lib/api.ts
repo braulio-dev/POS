@@ -34,7 +34,9 @@ function createBrowserMock(): PosApi {
     product(1, '7501000111', 'Papas', 5600, 12),
     product(2, '7501000222', 'Tortillas', 3000, 2),
     product(3, '7501000333', 'Cereal', 7000, 0),
-    product(4, null, 'Frijol Kg', 3900, 0, 0),
+    // Registered with the item code its scale prints, so a label like
+    // 20 01234 01350 C resolves here.
+    product(4, '01234', 'Frijol Kg', 3900, 0, 0),
   ]
 
   const settings: Settings = {
@@ -44,6 +46,10 @@ function createBrowserMock(): PosApi {
     corteThresholdCents: '200000',
     lowStockThreshold: '3',
     cashFloatCents: '0',
+    // On in the stand-in, unlike the real register: a browser has no scanner,
+    // so the only way to exercise a scale label here is to call findByScaleCode
+    // from the console, and having it disabled would just look broken.
+    scaleMode: 'weight',
     terminalEnabled: '1',
     terminalProvider: 'manual',
     terminalAutoCharge: '0',
@@ -80,6 +86,9 @@ function createBrowserMock(): PosApi {
   return {
     async listProducts() { return [...products] },
     async findByBarcode(barcode) { return products.find((p) => p.barcode === barcode) ?? null },
+    async findByScaleCode(itemCode, prefix) {
+      return products.find((p) => p.barcode === itemCode || p.barcode === prefix) ?? null
+    },
     async createProduct(input: NewProductInput) {
       const created = product(
         nextId, input.barcode, input.name, input.priceCents,
