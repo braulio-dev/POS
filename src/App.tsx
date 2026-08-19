@@ -199,45 +199,43 @@ export default function App() {
       />
 
       <main className="body">
-        <ProductGrid
-          products={visibleProducts}
-          lowStockAt={lowStockAt}
-          onSelect={addToCart}
+        {/* The grid scrolls; the search strip beneath it does not. Search sits
+            under the shelf it filters rather than in a footer across the whole
+            window, so the eye travels from the box to the results and stops. */}
+        <section className="grid-pane">
+          <ProductGrid
+            products={visibleProducts}
+            lowStockAt={lowStockAt}
+            onSelect={addToCart}
+          />
+          <div className="search-strip">
+            <input
+              className="text-input search-input"
+              placeholder="Buscar producto o código"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <span className="strip-note">
+              {visibleProducts.length}{' '}
+              {visibleProducts.length === 1 ? 'producto' : 'productos'}
+            </span>
+          </div>
+        </section>
+
+        <Cart
+          lines={lines}
+          totalCents={totalCents}
+          onRemove={removeOne}
+          onCorte={() => setOverlay({ kind: 'corte' })}
+          onCobrar={() => setOverlay({ kind: 'payment' })}
         />
-        <Cart lines={lines} totalCents={totalCents} onRemove={removeOne} />
       </main>
 
       {/* Sits in the layout rather than floating over it, so it physically
-          pushes the till down and cannot be worked past without noticing. */}
+          pushes the till up and cannot be worked past without noticing. */}
       {drawer?.needsCorte && overlay.kind === 'none' && (
         <CorteBanner drawer={drawer} onCorte={() => setOverlay({ kind: 'corte' })} />
       )}
-
-      <footer className="footer">
-        <div className="footer-search">
-          <input
-            className="text-input search-input"
-            placeholder="Buscar"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {/* Always available, unlike the banner, which only appears once the
-              drawer crosses the threshold. Shift changes and errands do not
-              wait for a peso amount. */}
-          <button className="btn-corte footer-corte" onClick={() => setOverlay({ kind: 'corte' })}>
-            CORTE
-          </button>
-        </div>
-        <div className="footer-action">
-          <button
-            className="btn-cobrar"
-            disabled={lines.length === 0}
-            onClick={() => setOverlay({ kind: 'payment' })}
-          >
-            COBRAR
-          </button>
-        </div>
-      </footer>
 
       {overlay.kind === 'password' && (
         <PasswordPrompt

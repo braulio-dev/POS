@@ -10,45 +10,52 @@ interface Props {
 
 export function ProductGrid({ products, lowStockAt, onSelect }: Props) {
   return (
-    <section className="grid-pane">
-      <div className="grid-scroll">
-        {products.length === 0 ? (
-          <p className="empty-grid">
-            Sin productos todavía. Agrégalos desde Inventario, en el ícono de arriba a la derecha.
-          </p>
-        ) : (
-          <div className="product-grid">
-            {products.map((p) => {
-              const level = stockLevel(p, lowStockAt)
-              const label = stockLabel(level, p.stock)
-              return (
-                <button key={p.id} className="product-card" onClick={() => onSelect(p)}>
-                  <div className="product-thumb">
-                    {p.image_file ? (
-                      <img src={`posimg://images/${p.image_file}`} alt="" draggable={false} />
-                    ) : (
-                      <span className="thumb-placeholder">{p.name.slice(0, 2).toUpperCase()}</span>
-                    )}
-                    {/* Only worth the ink when it is actionable: a healthy count
-                        is noise on every card, an empty shelf is not. Goods sold
-                        loose get no badge at all -- they have no unit count. */}
-                    {label && (
-                      <span
-                        className={`stock-badge stock-${level}`}
-                        title={level === 'over' ? 'Se vendio mas de lo registrado' : undefined}
-                      >
-                        {label}
-                      </span>
-                    )}
-                  </div>
+    <div className="grid-scroll">
+      {products.length === 0 ? (
+        <p className="empty-grid">
+          Sin productos todavía. Agrégalos desde Inventario, en el ícono de arriba a la derecha.
+        </p>
+      ) : (
+        <div className="product-grid">
+          {products.map((p) => {
+            const level = stockLevel(p, lowStockAt)
+            const label = stockLabel(level, p.stock)
+            return (
+              <button key={p.id} className="product-card" onClick={() => onSelect(p)}>
+                {/* The photo is the tile: it fills the square edge to edge, and
+                    the name and price ride a band over the bottom of it. That is
+                    what keeps every tile the same size no matter how long the
+                    name is, and what makes a shelf of photos scannable at a
+                    glance instead of a wall of text. */}
+                <span className="product-thumb">
+                  {p.image_file ? (
+                    <img src={`posimg://images/${p.image_file}`} alt="" draggable={false} />
+                  ) : (
+                    <span className="thumb-placeholder">{p.name.slice(0, 2).toUpperCase()}</span>
+                  )}
+                </span>
+
+                {/* Only worth the ink when it is actionable: a healthy count
+                    is noise on every card, an empty shelf is not. Goods sold
+                    loose get no badge at all -- they have no unit count. */}
+                {label && (
+                  <span
+                    className={`stock-badge stock-${level}`}
+                    title={level === 'over' ? 'Se vendio mas de lo registrado' : undefined}
+                  >
+                    {label}
+                  </span>
+                )}
+
+                <span className="product-band">
                   <span className="product-name">{p.name}</span>
                   <span className="product-price">{formatMoney(p.price_cents)}</span>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
-    </section>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

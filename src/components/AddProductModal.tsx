@@ -128,7 +128,9 @@ export function AddProductModal({ onSave, onCancel }: Props) {
             checked={trackStock}
             onChange={(e) => setTrackStock(e.target.checked)}
           />
-          <span>Llevar inventario de este producto</span>
+          {/* Same word as the column header in Inventario and on the admin page,
+              so the switch is recognisably the same switch in all three places. */}
+          <span>Inventario</span>
         </label>
 
         <div className="field">

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { formatShort } from '../lib/money'
+import { formatMoney } from '../lib/money'
 import { methodLabel, terminalLabel, type Tender } from '../lib/tender'
 
 interface Props {
@@ -27,12 +27,17 @@ export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
         without their change on the *next* sale. So the headline says what
         actually happened instead.
       */}
-      <h2 className="change-title">{tender.method === 'card' ? 'PAGADO CON TARJETA' : 'CAMBIO'}</h2>
-      {tender.method !== 'card' && <p className="change-value">{formatShort(tender.changeCents)}</p>}
+      {/* On a cash sale the label is a caption over a huge number. A card sale
+          has no number, so the label itself has to carry the screen and is set
+          large instead. */}
+      <h2 className={`change-title${tender.method === 'card' ? ' change-title-lead' : ''}`}>
+        {tender.method === 'card' ? 'PAGADO CON TARJETA' : 'CAMBIO'}
+      </h2>
+      {tender.method !== 'card' && <p className="change-value">{formatMoney(tender.changeCents)}</p>}
 
       {paidByCard && (
         <p className="change-terminal">
-          {formatShort(tender.cardCents)} en la terminal
+          {formatMoney(tender.cardCents)} en la terminal
           {terminalLabel(tender.terminal) ? ` · ${terminalLabel(tender.terminal)}` : ''}
         </p>
       )}
@@ -40,7 +45,7 @@ export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
       <dl className="change-summary">
         <div>
           <dt>TOTAL</dt>
-          <dd>{formatShort(totalCents)}</dd>
+          <dd>{formatMoney(totalCents)}</dd>
         </div>
         <div>
           <dt>PAGO</dt>
@@ -49,7 +54,7 @@ export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
         {tender.method !== 'card' && (
           <div>
             <dt>RECIBIDO</dt>
-            <dd>{formatShort(tender.receivedCents)}</dd>
+            <dd>{formatMoney(tender.receivedCents)}</dd>
           </div>
         )}
       </dl>

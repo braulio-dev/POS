@@ -175,7 +175,7 @@ app.whenReady().then(async () => {
   await wait(300)
 
   // 2c. Inventory, behind the same gate.
-  await win.webContents.executeJavaScript(`document.querySelector('.icon-btn-right').click()`)
+  await win.webContents.executeJavaScript(`document.querySelectorAll('.icon-btn')[1].click()`)
   await wait(400)
   await win.webContents.executeJavaScript(`
     (() => {
@@ -203,7 +203,7 @@ app.whenReady().then(async () => {
 
   // 2. Add-product modal — now reached from inside Inventario, which is behind
   //    the password, rather than from a button on the sale screen.
-  await win.webContents.executeJavaScript(`document.querySelector('.icon-btn-right').click()`)
+  await win.webContents.executeJavaScript(`document.querySelectorAll('.icon-btn')[1].click()`)
   await wait(400)
   await win.webContents.executeJavaScript(`
     (() => {
@@ -255,7 +255,7 @@ app.whenReady().then(async () => {
   }
 
   // 3. Payment modal with a received amount typed in.
-  await win.webContents.executeJavaScript(`document.querySelector('.footer-action button').click()`)
+  await win.webContents.executeJavaScript(`document.querySelector('.ticket-actions .btn-cobrar').click()`)
   await wait(400)
   await win.webContents.executeJavaScript(`
     (() => {
@@ -287,7 +287,7 @@ app.whenReady().then(async () => {
   console.log(banner ? `CORTE PASS: banner shown — ${JSON.stringify(banner)}` : 'CORTE FAIL: no banner')
   await shoot(win, '8-corte-banner')
 
-  await win.webContents.executeJavaScript(`document.querySelector('.btn-corte').click()`)
+  await win.webContents.executeJavaScript(`document.querySelector('.corte-banner .btn-corte').click()`)
   await wait(500)
   await shoot(win, '9-corte-modal')
 

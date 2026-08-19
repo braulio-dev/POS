@@ -14,17 +14,20 @@ export function Header({ storeName, onOpenSettings, onOpenInventory }: Props) {
         </svg>
       </button>
       {/* The store name is a setting, so it renders from state — editing it in
-          Configuración repaints this title on the next keystroke. */}
+          Configuración repaints this title on the next keystroke. It sits in
+          the flow next to the gear rather than centred, so a long name pushes
+          nothing around: the spacer below absorbs the slack. */}
+      <h1 className="store-title">{storeName}</h1>
+      <span className="header-spacer" />
+
       {/* Inventory sits behind the same password as Configuración: changing
           what the shelf says it holds is an owner action, not a cashier one. */}
-      <button className="icon-btn icon-btn-right" onClick={onOpenInventory} aria-label="Inventario" title="Inventario">
+      <button className="icon-btn" onClick={onOpenInventory} aria-label="Inventario" title="Inventario">
         <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
           <path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5z" />
           <path d="M3 7.5 12 12l9-4.5M12 12v9" />
         </svg>
       </button>
-
-      <h1 className="store-title">{storeName}</h1>
     </header>
   )
 }

@@ -260,6 +260,10 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
           <strong>{formatMoney(totalCents)}</strong>
         </div>
 
+        {/* The total bleeds to the edges as a green header; everything the
+            cashier operates is padded inside this block, and COBRAR bleeds
+            again at the foot. */}
+        <div className="payment-body">
         {terminalEnabled && (
           <div className="payment-methods" role="group" aria-label="Forma de pago">
             {METHODS.map((m) => (
@@ -367,6 +371,7 @@ export function PaymentModal({ totalCents, terminalEnabled, onConfirm, onCancel 
         )}
 
         {error && <p className="field-error">{error}</p>}
+        </div>
 
         <button
           className="btn-cobrar payment-cobrar"

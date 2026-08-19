@@ -17,7 +17,12 @@ interface Props {
 export function CorteBanner({ drawer, onCorte }: Props) {
   return (
     <div className="corte-banner" role="status">
-      <span className="corte-banner-dot" aria-hidden="true" />
+      <span className="corte-banner-dot" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+          <path d="M12 7v6" />
+          <path d="M12 16.6v.01" />
+        </svg>
+      </span>
       <div className="corte-banner-text">
         <strong>HAY QUE HACER CORTE</strong>
         <span className="corte-banner-detail">

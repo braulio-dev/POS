@@ -6,87 +6,134 @@
 <title>Inventario — El Paisa</title>
 <style>
   :root {
-    --red: #b65a57; --cream: #ede0ac; --green: #22b14c; --ink: #111;
+    --green: #4caf50; --green-dark: #43a047; --green-soft: #81c784; --green-tint: #e8f5e9;
+    --ink: #212121; --muted: #616161; --faint: #9e9e9e; --line: #e0e0e0;
+    --surface: #fff; --canvas: #f5f5f5; --field: #fafafa;
+    --red: #d32f2f; --red-dark: #8e0000; --amber-dark: #e65100;
+    --radius: 4px;
     color-scheme: light;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; font-family: "Segoe UI", Roboto, system-ui, sans-serif;
-    color: var(--ink); background: var(--cream);
+    margin: 0; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    color: var(--ink); background: var(--canvas);
   }
   header {
-    background: var(--red); border-bottom: 3px solid var(--ink);
-    padding: 14px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    background: var(--green); color: #fff; border: none;
+    padding: 0 16px; min-height: 56px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
   }
-  header h1 { margin: 0; font-size: 22px; }
+  header h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: .2px; }
   header .spacer { flex: 1 1 auto; }
-  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
-  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-  .tab {
-    padding: 8px 16px; font: inherit; font-weight: 700; background: #fff;
-    border: 2px solid var(--ink); border-radius: 4px; cursor: pointer;
+  header .muted { color: #e8f5e9; }
+  /* On the green bar the buttons have to read as white-on-green, not as the
+     grey-on-white they are everywhere else in the page. */
+  header .btn {
+    color: #fff; background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.45);
   }
-  .tab[aria-selected="true"] { background: var(--green); }
-  table { width: 100%; border-collapse: collapse; background: #fdf7e0; }
-  th, td { padding: 8px 10px; border: 2px solid var(--ink); text-align: left; vertical-align: middle; }
-  th { background: var(--red); font-size: 13px; letter-spacing: .5px; }
+  header .btn:hover { background: rgba(255,255,255,.28); }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+
+  /* Underline tabs: the row sits directly above the table it controls, and a
+     solid green chip up there competed with the primary buttons for the eye. */
+  .tabs { display: flex; gap: 2px; margin-bottom: 16px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .tab {
+    padding: 11px 15px; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted);
+    background: transparent; border: none; border-bottom: 3px solid transparent;
+    margin-bottom: -1px; cursor: pointer;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab[aria-selected="true"] { color: var(--green-dark); border-bottom-color: var(--green); }
+
+  table {
+    width: 100%; border-collapse: collapse; background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  }
+  th, td { padding: 10px; border: none; border-bottom: 1px solid #f0f0f0; text-align: left; vertical-align: middle; }
+  th {
+    background: var(--field); font-size: 12px; font-weight: 700; letter-spacing: .6px;
+    color: var(--muted); border-bottom: 1px solid var(--line);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #fafafa; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
   input, button, select { font: inherit; }
   input[type=text], input[type=number], input[type=password] {
-    width: 100%; padding: 6px 8px; border: 2px solid var(--ink); border-radius: 4px; background: #fff;
+    width: 100%; padding: 9px 11px; color: var(--ink); background: var(--surface);
+    border: 1px solid #d5d5d5; border-radius: var(--radius); outline: none;
   }
+  input[type=text]:focus, input[type=number]:focus, input[type=password]:focus {
+    border-color: var(--green); box-shadow: 0 0 0 3px rgba(76,175,80,.24);
+  }
+  input[type=checkbox] { accent-color: var(--green); width: 17px; height: 17px; }
+
   .btn {
-    padding: 8px 14px; font-weight: 700; background: #fff;
-    border: 2px solid var(--ink); border-radius: 4px; cursor: pointer;
+    padding: 9px 16px; font-weight: 600; color: var(--ink); background: var(--surface);
+    border: 1px solid #d5d5d5; border-radius: var(--radius); cursor: pointer;
   }
-  .btn-go { background: var(--green); }
-  .btn-danger { background: #e88; }
+  .btn:hover { background: var(--field); }
+  .btn-go { color: #fff; background: var(--green); border-color: var(--green); }
+  .btn-go:hover { background: var(--green-dark); border-color: var(--green-dark); }
+  .btn-danger { color: #fff; background: var(--red); border-color: var(--red); }
+  .btn-danger:hover { background: #b71c1c; border-color: #b71c1c; }
+
   .thumb {
     width: 52px; height: 40px; object-fit: cover; display: block;
-    border: 2px solid var(--ink); border-radius: 3px; background: #fff;
+    border: 1px solid var(--line); border-radius: 3px; background: var(--field);
   }
   .thumb-empty {
     width: 52px; height: 40px; display: grid; place-items: center; font-size: 10px;
-    color: #999; border: 2px dashed #bbb; border-radius: 3px; background: #fff;
+    color: var(--faint); border: 1px dashed #d5d5d5; border-radius: 3px; background: var(--field);
   }
-  .gate { max-width: 420px; margin: 80px auto; padding: 24px; background: #fdf7e0;
-          border: 3px solid var(--ink); border-radius: 6px; }
-  .gate label { display: block; font-size: 12px; font-weight: 800; letter-spacing: 1px; margin-bottom: 6px; }
+  .gate {
+    max-width: 420px; margin: 80px auto; padding: 26px; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,.08);
+  }
+  .gate h2 { font-size: 20px; font-weight: 600; }
+  .gate label { display: block; font-size: 12px; font-weight: 700; letter-spacing: 1.2px; color: var(--muted); margin-bottom: 6px; }
   .row { display: flex; gap: 10px; align-items: center; }
-  .muted { color: #7a6f45; font-size: 13px; }
-  .status { padding: 8px 12px; border-radius: 4px; background: rgba(0,0,0,.07); font-size: 13px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .status { padding: 10px 12px; border-radius: var(--radius); background: var(--field); border: 1px solid var(--line); font-size: 13px; }
   .hidden { display: none !important; }
-  .stock-low { color: #a11b1b; font-weight: 800; }
+  .stock-low { color: var(--red); font-weight: 700; }
 
   /* Payment indicators. Colour alone would not survive a black-and-white print
      or a colour-blind reader, so each badge carries its own word too. */
   .pay {
-    display: inline-block; padding: 2px 8px; border: 2px solid var(--ink);
-    border-radius: 999px; font-size: 11px; font-weight: 800; letter-spacing: .5px;
-    white-space: nowrap;
+    display: inline-block; padding: 3px 9px; border: none;
+    border-radius: 3px; font-size: 11px; font-weight: 700; letter-spacing: .4px;
+    color: #fff; white-space: nowrap;
   }
-  .pay-cash  { background: #cfe8cf; }
-  .pay-card  { background: #cddcf2; }
-  .pay-mixed { background: #f2e2bd; }
+  .pay-cash  { background: var(--green-dark); }
+  .pay-card  { background: #1565c0; }
+  .pay-mixed { background: var(--amber-dark); }
   /* The authorisation number, shown under the badge. It is the only thing the
      owner can quote back to Clip when a charge is disputed. */
-  .pay-ref { display: block; margin-top: 3px; font-size: 11px; color: #6b6145; }
+  .pay-ref { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
 
-  .totals {
-    display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
-  }
+  .totals { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .totals div {
-    padding: 8px 14px; background: #fdf7e0; border: 2px solid var(--ink); border-radius: 4px;
+    padding: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   }
-  .totals span { display: block; font-size: 11px; font-weight: 800; letter-spacing: .5px; }
-  .totals strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .totals span { display: block; font-size: 11px; font-weight: 700; letter-spacing: .6px; color: var(--muted); }
+  .totals strong { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .gone {
-    display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 999px;
-    background: #777; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: .5px;
+    display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 3px;
+    background: var(--muted); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .4px;
   }
   tr.inactive { opacity: .55; }
-  tr.inactive input { background: #f0ece0; }
+  tr.inactive input { background: #f0f0f0; }
   td.actions { white-space: nowrap; }
+  /* One delete button per row would be a column of solid red shouting at the
+     owner on every visit. In the table it reads as an outline and only fills in
+     on hover; the standalone destructive actions in Mantenimiento stay solid. */
+  td.actions .btn-danger { color: var(--red); background: var(--surface); border-color: #e6a9a9; }
+  td.actions .btn-danger:hover { color: #fff; background: var(--red); border-color: var(--red); }
+  /* Same reasoning for Guardar: green is the page's primary action, and a green
+     button on every row makes AGREGAR stop being the obvious one. */
+  td.actions .btn-go { color: var(--green-dark); background: var(--surface); border-color: #a5d6a7; }
+  td.actions .btn-go:hover { color: #fff; background: var(--green); border-color: var(--green); }
+  h3 { font-size: 16px; font-weight: 600; margin: 22px 0 10px; }
   @media (max-width: 700px) {
     th.hide-sm, td.hide-sm { display: none; }
     main { padding: 10px; }
