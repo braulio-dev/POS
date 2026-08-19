@@ -322,6 +322,14 @@ movimientos each export as CSV over the same range, written with a BOM because
 the person opening them opens them in Excel, and Excel reads a BOM-less UTF-8
 file as Latin-1 and turns every *Jamón* into *JamÃ³n*.
 
+The two bar charts are Chart.js, **vendored** into `server/vendor/` and served
+from the same box rather than fetched from a CDN: the shop's internet is the
+thing most likely to be down, and the admin page should not need someone else's
+domain to draw a bar. Refresh it with `npm i -D chart.js` and re-copy
+`node_modules/chart.js/dist/chart.umd.min.js`. If the file is missing the tab
+still renders — the totals and the tables need no library, so a chart that
+cannot draw says so and gets out of the way.
+
 Two decisions worth knowing about:
 
 - **Days are the shop's days.** Sales are stored as UTC instants, which is the

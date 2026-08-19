@@ -285,6 +285,7 @@ register to work, only for the browser page to have anything to show:
 | `GET /api/report?from=&to=` | Totals, per-day and per-hour buckets, and top sellers for a date range. |
 | `GET /api/reorder?below=&days=` | What to buy: at or below the mark, ordered by what runs out first. |
 | `GET /api/export/{ventas,cortes,movimientos}.csv?from=&to=` | The same ranges as CSV. |
+| `GET /vendor/chart.umd.min.js` | Chart.js, vendored in `server/vendor/`. Unauthenticated: public library code, none of the shop's data. |
 
 Dates in those routes are **shop-local** calendar days (`YYYY-MM-DD`), not UTC.
 Rows are stored as UTC instants and bucketed through `POS_TZ`, which defaults to

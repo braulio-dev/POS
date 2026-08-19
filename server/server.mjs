@@ -922,6 +922,28 @@ const server = http.createServer(async (req, res) => {
       return res.end(html)
     }
 
+    /**
+     * The one third-party file this server holds: Chart.js, vendored rather
+     * than pulled from a CDN.
+     *
+     * The shop's internet is the thing most likely to be down, and a chart
+     * library fetched from someone else's domain fails exactly when the owner
+     * is at home trying to see why today was quiet. Served from here, the admin
+     * page has no external dependency at all. Unauthenticated, like the page
+     * itself — it is public library code and carries none of the shop's data.
+     */
+    if (route === '/vendor/chart.umd.min.js' && method === 'GET') {
+      const file = path.join(HERE, 'vendor', 'chart.umd.min.js')
+      if (!fs.existsSync(file)) return json(res, 404, { error: 'not found' })
+      res.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        // Immutable: the filename changes when the version does, so a year is
+        // safe and saves 200 KB on every visit to the page.
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      })
+      return res.end(fs.readFileSync(file))
+    }
+
     if (route === '/health' && method === 'GET') {
       return json(res, 200, { server: 'pos-sync', version: 1, storeId, time: now() })
     }

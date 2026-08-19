@@ -8,6 +8,9 @@ FROM node:22.14-alpine
 # only Node built-ins, so there is nothing to resolve, audit, or break.
 WORKDIR /app
 COPY server.mjs admin.html ./
+# Chart.js, vendored so the admin page has no external dependency — see the
+# /vendor route in server.mjs.
+COPY vendor ./vendor
 
 # Data lives on a volume, owned by the unprivileged user the process runs as.
 RUN mkdir -p /data && chown -R node:node /data /app

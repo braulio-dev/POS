@@ -131,30 +131,29 @@
      owner can quote back to Clip when a charge is disputed. */
   .pay-ref { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
 
-  /* Bars, drawn with layout rather than a charting library: the register runs
-     offline and the admin page is a single file served off the same box, so a
-     CDN script is a dependency that fails exactly when the internet does. */
+  /* Chart.js draws into this box. It needs a height it can measure — a canvas
+     in a height:auto parent collapses — and `position: relative` so the
+     library's responsive resizing has something to size against. */
   .chart {
-    display: flex; align-items: flex-end; gap: 4px;
-    height: 150px; padding: 8px 4px 0;
+    position: relative;
+    height: 230px;
+    padding: 10px 12px 6px;
     background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-    overflow-x: auto;
   }
-  .bar {
-    flex: 1 1 0; min-width: 26px;
-    display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
-    height: 100%; gap: 4px;
+
+  /* Toolbars wrap as a whole rather than dropping one stray button onto a line
+     of its own: the controls stay together on the left, the actions stay
+     together on the right, and a narrow window breaks between the two groups
+     instead of in the middle of one. */
+  .toolbar {
+    display: flex; align-items: center; gap: 10px;
+    flex-wrap: wrap; margin-bottom: 12px;
   }
-  .bar-fill {
-    width: 100%; min-height: 2px;
-    background: var(--green); border-radius: 2px 2px 0 0;
+  .toolbar-group {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin-left: auto;
   }
-  .bar-label {
-    font-size: 10px; color: var(--muted); white-space: nowrap;
-    max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-  }
-  /* Twenty-four buckets need less room each than thirty labelled days. */
-  .chart-hours .bar { min-width: 14px; }
+  .toolbar-group .muted { white-space: nowrap; }
 
   .totals { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .totals div {
@@ -309,7 +308,11 @@
     </section>
 
     <section id="view-report" class="hidden">
-      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+      <!-- Three "CSV" suffixes made the row too wide for a laptop and dropped
+           the last button onto a line of its own. The word is said once, over
+           the group it applies to, and each button keeps only what distinguishes
+           it — which is also how they read out loud. -->
+      <div class="toolbar">
         <label class="muted">Desde <input id="rep-from" type="date"></label>
         <label class="muted">Hasta <input id="rep-to" type="date"></label>
         <button class="btn btn-go" id="rep-apply">Ver</button>
@@ -318,20 +321,23 @@
         <button class="btn" data-range="0">Hoy</button>
         <button class="btn" data-range="6">7 días</button>
         <button class="btn" data-range="29">30 días</button>
-        <span style="margin-left:auto"></span>
-        <button class="btn" data-csv="ventas.csv">Ventas CSV</button>
-        <button class="btn" data-csv="cortes.csv">Cortes CSV</button>
-        <button class="btn" data-csv="movimientos.csv">Movimientos CSV</button>
+
+        <span class="toolbar-group">
+          <span class="muted">Descargar CSV:</span>
+          <button class="btn" data-csv="ventas.csv">Ventas</button>
+          <button class="btn" data-csv="cortes.csv">Cortes</button>
+          <button class="btn" data-csv="movimientos.csv">Movimientos</button>
+        </span>
       </div>
       <p id="rep-status" class="status hidden"></p>
 
       <div id="rep-totals" class="totals"></div>
 
       <h3>Ventas por día</h3>
-      <div id="rep-days" class="chart"></div>
+      <div class="chart"><canvas id="rep-days"></canvas></div>
 
       <h3>Por hora del día</h3>
-      <div id="rep-hours" class="chart chart-hours"></div>
+      <div class="chart"><canvas id="rep-hours"></canvas></div>
 
       <h3>Lo que más se vende</h3>
       <table>
@@ -352,12 +358,13 @@
     </section>
 
     <section id="view-falta" class="hidden">
-      <div class="row" style="margin-bottom:12px;flex-wrap:wrap">
+      <div class="toolbar">
         <label class="muted">Avisar con <input id="falta-below" type="number" min="0" step="1" value="3" style="max-width:80px"> o menos</label>
         <label class="muted">Ventas de los últimos <input id="falta-days" type="number" min="1" step="1" value="30" style="max-width:80px"> días</label>
         <button class="btn btn-go" id="falta-apply">Ver</button>
-        <span style="margin-left:auto"></span>
-        <button class="btn" id="falta-copy">Copiar lista</button>
+        <span class="toolbar-group">
+          <button class="btn" id="falta-copy">Copiar lista</button>
+        </span>
       </div>
       <p id="falta-status" class="status hidden"></p>
       <table>
@@ -435,6 +442,10 @@
   </main>
 </div>
 
+<!-- Vendored, not from a CDN: the shop's internet is the thing most likely to
+     be down, and the admin page should not need someone else's domain to draw a
+     bar. Served by server.mjs from server/vendor/. -->
+<script src="/vendor/chart.umd.min.js"></script>
 <script>
 const $ = (id) => document.getElementById(id)
 let KEY = localStorage.getItem('posSyncKey') || ''
@@ -1016,31 +1027,100 @@ const dayLabel = (day) => {
   return d.toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
-/**
- * A bar per bucket, sized against the busiest one.
- *
- * Scaled to the range's own maximum rather than to a fixed peso ceiling: the
- * question this answers is "which days were the good ones", which is a question
- * about the shape, and a fixed scale flattens a quiet week into nothing.
- */
-function drawChart(el, buckets, label) {
-  const max = Math.max(1, ...buckets.map((b) => b.totalCents))
-  // Thirty labels do not fit across the width, and thirty truncated ones
-  // ("lun 2…", "mar 2…") are worse than none: they cost the same space and
-  // name nothing. Every nth is labelled instead, and the rest carry their day
-  // in the tooltip, where there is room for the whole thing.
-  const every = Math.ceil(buckets.length / 10)
+/* Chart.js instances, kept so a redraw replaces its chart instead of stacking
+   a second one on the same canvas — which leaks the old one and leaves two sets
+   of tooltips fighting over the same pixels. */
+const charts = {}
 
-  el.replaceChildren(...buckets.map((b, i) => {
-    const bar = document.createElement('div')
-    bar.className = 'bar'
-    bar.title = `${label(b)} · ${money(b.totalCents)} · ${b.saleCount} ventas`
-    const shown = i % every === 0 || i === buckets.length - 1 ? label(b) : ''
-    bar.innerHTML = `
-      <span class="bar-fill" style="height:${Math.round((b.totalCents / max) * 100)}%"></span>
-      <span class="bar-label">${escapeHtml(shown)}</span>`
-    return bar
-  }))
+/**
+ * One bar chart, drawn by Chart.js into an existing canvas.
+ *
+ * The axis owns the labels, which is the point of using it: they are laid out
+ * below the plot area and the bars grow into the space that is left. The
+ * hand-rolled flex version put each label *inside* its own bar, so every label
+ * pushed its bar up by its own height and the taller the labels, the shorter
+ * the chart.
+ *
+ * Scaled to the range's own maximum, as before: this answers "which days were
+ * the good ones", a question about shape, and a fixed peso ceiling flattens a
+ * quiet week into nothing.
+ */
+function drawChart(id, buckets, label) {
+  const ctx = $(id)
+
+  // A server updated without its vendor/ directory would otherwise throw here
+  // and take the whole tab down — including the totals and the top sellers,
+  // which need no library at all. The numbers are the point; the bars are how
+  // they are easier to read.
+  if (typeof Chart === 'undefined') {
+    ctx.replaceWith(Object.assign(document.createElement('p'), {
+      className: 'muted',
+      textContent: 'No se pudo cargar la gráfica (falta /vendor/chart.umd.min.js en el servidor).',
+    }))
+    return
+  }
+
+  if (charts[id]) charts[id].destroy()
+
+  charts[id] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: buckets.map(label),
+      datasets: [{
+        label: 'Vendido',
+        data: buckets.map((b) => b.totalCents / 100),
+        // The same green as everything else on the page, read off the
+        // stylesheet rather than repeated here, so a change to the palette
+        // reaches the charts too.
+        backgroundColor: getComputedStyle(document.documentElement)
+          .getPropertyValue('--green').trim() || '#4caf50',
+        borderRadius: 2,
+        // Bars keep their own width instead of stretching to fill: 24 hours
+        // across a wide screen otherwise draws slabs that read as blocks of
+        // colour rather than as a distribution.
+        maxBarThickness: 46,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      // Bars are labelled on the axis, so a tooltip that names the dataset
+      // again says nothing; it exists to carry the exact figures.
+      plugins: {
+        legend: { display: true, position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            label: (item) => {
+              const b = buckets[item.dataIndex]
+              return `${money(b.totalCents)} · ${b.saleCount} ${b.saleCount === 1 ? 'venta' : 'ventas'}`
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            // Chart.js drops labels that would collide, which is what the old
+            // "every nth" hack was hand-rolling; autoSkip does it against the
+            // real rendered width instead of a guess.
+            autoSkip: true,
+            maxRotation: 0,
+            font: { size: 11 },
+          },
+        },
+        y: {
+          beginAtZero: true,
+          ticks: {
+            font: { size: 11 },
+            // Pesos, not centavos: the data is divided by 100 above so the
+            // axis can label round money.
+            callback: (value) => `$${value}`,
+          },
+        },
+      },
+    },
+  })
 }
 
 function reportRange() {
@@ -1065,8 +1145,8 @@ async function loadReport() {
       ? `<div><span>ENTRADAS / SALIDAS</span><strong>${money(r.movements.inCents)} / ${money(r.movements.outCents)}</strong></div>`
       : ''}`
 
-  drawChart($('rep-days'), r.days, (b) => dayLabel(b.day))
-  drawChart($('rep-hours'), r.hours, (b) => `${b.hour}h`)
+  drawChart('rep-days', r.days, (b) => dayLabel(b.day))
+  drawChart('rep-hours', r.hours, (b) => `${b.hour}h`)
 
   $('rep-top').replaceChildren(...r.topProducts.map((p) => {
     const tr = document.createElement('tr')
