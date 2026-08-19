@@ -946,6 +946,29 @@ function applyRemoteChange(change) {
     return { applied: true, imageFile: payload.imageFile || null }
   }
 
+  // A permanent delete from the admin page. Unlike the server, this database
+  // keeps a real reference from sale_items to products, so the line items are
+  // detached first: they already snapshot the name and unit price, which is
+  // what a reprinted receipt actually needs. Losing product_id costs nothing a
+  // receipt shows; deleting the product out from under it would corrupt one.
+  if (entity === 'product-purge') {
+    const existing = db.prepare('SELECT id FROM products WHERE uuid = ?').get(payload.uuid)
+    if (!existing) return { applied: false }
+
+    // Both statements or neither: foreign_keys is ON, so a delete that ran
+    // without the detach would be rejected and leave the catalogue half-edited.
+    db.exec('BEGIN')
+    try {
+      db.prepare('UPDATE sale_items SET product_id = NULL WHERE product_id = ?').run(existing.id)
+      db.prepare('DELETE FROM products WHERE id = ?').run(existing.id)
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    return { applied: true }
+  }
+
   if (entity === 'stock') {
     const existing = db.prepare('SELECT stock_updated_at FROM products WHERE uuid = ?').get(payload.uuid)
     if (!existing) return { applied: false }

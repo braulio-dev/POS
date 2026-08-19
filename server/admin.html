@@ -72,6 +72,11 @@
     border: 1px solid #d5d5d5; border-radius: var(--radius); cursor: pointer;
   }
   .btn:hover { background: var(--field); }
+  /* GUARDAR CAMBIOS sits disabled most of the time, so it has to look inert
+     rather than like a green button nobody is clicking. */
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn:disabled:hover { background: var(--surface); }
+  .btn-go:disabled:hover { background: var(--green); }
   .btn-go { color: #fff; background: var(--green); border-color: var(--green); }
   .btn-go:hover { background: var(--green-dark); border-color: var(--green-dark); }
   .btn-danger { color: #fff; background: var(--red); border-color: var(--red); }
@@ -117,12 +122,35 @@
   }
   .totals span { display: block; font-size: 11px; font-weight: 700; letter-spacing: .6px; color: var(--muted); }
   .totals strong { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .gone {
-    display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 3px;
-    background: var(--muted); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .4px;
+  /* A deleted row reads as deleted twice over: faded like the rest of the page's
+     disabled state, and washed red so it is obvious at a glance which rows are
+     out of the catalogue without reading a badge on every one of them. */
+  tr.inactive { opacity: .6; background: rgba(211, 47, 47, .16); }
+  tr.inactive:hover { background: rgba(211, 47, 47, .22); }
+  tr.inactive input { background: #f6eceb; border-color: #e3c3c1; }
+
+  /* Edited but not yet saved. Same tint the register uses in Inventario, so the
+     two screens agree on what "you have unsaved work here" looks like. */
+  tr.dirty { background: var(--green-tint); }
+  tr.dirty input { border-color: #a5d6a7; }
+  tr.inactive.dirty { background: rgba(211, 47, 47, .16); }
+
+  .toolbar-save { justify-content: flex-end; margin-bottom: 12px; }
+  .toolbar-save .muted { margin-right: auto; }
+
+  /* Confirmation dialog */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+    background: rgba(33, 33, 33, .55); padding: 20px;
   }
-  tr.inactive { opacity: .55; }
-  tr.inactive input { background: #f0f0f0; }
+  .modal-backdrop .modal {
+    width: 460px; max-width: 100%; padding: 24px; background: var(--surface);
+    border-radius: 6px; box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+  }
+  .modal-backdrop h3 { margin: 0 0 12px; font-size: 20px; font-weight: 600; }
+  .modal-backdrop p { margin: 0 0 12px; font-size: 14px; line-height: 1.45; }
+  .confirm-warn { color: var(--red); font-weight: 600; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
   td.actions { white-space: nowrap; }
   /* One delete button per row would be a column of solid red shouting at the
      owner on every visit. In the table it reads as an outline and only fills in
@@ -154,7 +182,7 @@
 
 <div id="app" class="hidden">
   <header>
-    <h1>Inventario — El Paisa</h1>
+    <h1 id="store-title">Inventario</h1>
     <div class="spacer"></div>
     <span id="sync-note" class="muted"></span>
     <button class="btn" id="refresh">Actualizar</button>
@@ -180,6 +208,14 @@
         </label>
         <button class="btn btn-go" id="add">AGREGAR</button>
       </div>
+
+      <!-- One save for the whole table. Saving row by row meant the owner
+           correcting five prices had to remember five separate clicks, and a
+           row they edited but never saved looked identical to one they had. -->
+      <div class="row toolbar-save">
+        <span id="dirty-note" class="muted"></span>
+        <button class="btn btn-go" id="save-all" disabled>GUARDAR CAMBIOS</button>
+      </div>
       <p id="products-status" class="status hidden"></p>
       <table>
         <thead>
@@ -199,9 +235,13 @@
         <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza. Desmárcalo
         para cosas a granel — frijol por kilo, bolsas sueltas — que no tienen conteo y
         si no, saldrían siempre como AGOTADO en la caja.<br>
-        Los productos eliminados se quedan en gris al final de la lista con el botón
-        <strong>Restaurar</strong>: nunca se borran de verdad, porque las ventas viejas
-        siguen apuntando a ellos.<br>
+        El botón <strong>×</strong> lo quita del catálogo: la fila se marca en rojo al
+        final de la lista y <strong>Restaurar</strong> la revive. Sobre esa fila roja
+        aparece <strong>Eliminar</strong>, que sí lo borra para siempre, aquí y en la
+        caja — las ventas ya hechas no cambian, porque guardan el nombre y el precio
+        de cuando se vendieron.<br>
+        Edita lo que necesites y presiona <strong>GUARDAR CAMBIOS</strong> una sola vez:
+        se envían todas las filas que tocaste.
         Los cambios llegan a la caja en el siguiente ciclo de sincronización.
         La cantidad sólo se envía si escribes un número nuevo — así una edición
         de precio nunca pisa el conteo que la caja lleva de las ventas del día.
@@ -292,6 +332,23 @@ function note(el, message, ms = 3000) {
 
 /* ------------------------------------------------------------- products */
 
+/**
+ * Every row that currently has unsaved edits, keyed by uuid.
+ *
+ * The table is rebuilt wholesale on every load, so this is cleared there rather
+ * than pruned here — a stale entry would otherwise keep GUARDAR CAMBIOS lit for
+ * a row that no longer exists.
+ */
+const dirtyRows = new Map()
+
+function refreshSaveButton() {
+  const n = dirtyRows.size
+  $('save-all').disabled = n === 0
+  $('dirty-note').textContent = n === 0
+    ? ''
+    : n === 1 ? '1 cambio sin guardar' : `${n} cambios sin guardar`
+}
+
 function productRow(p) {
   const tr = document.createElement('tr')
   if (!p.active) tr.className = 'inactive'
@@ -303,55 +360,61 @@ function productRow(p) {
     ? '<img class="thumb" alt="">'
     : '<div class="thumb-empty">sin foto</div>'
 
+  // No "eliminado" badge: the row's own red wash already says it, across every
+  // cell rather than in one corner of one column.
   tr.innerHTML = `
     <td>${img}</td>
-    <td>
-      <input type="text" value="${escapeHtml(p.name)}" data-f="name">
-      ${p.active ? '' : '<span class="gone">eliminado</span>'}
-    </td>
+    <td><input type="text" value="${escapeHtml(p.name)}" data-f="name"></td>
     <td class="hide-sm"><input type="text" value="${escapeHtml(p.barcode || '')}" data-f="barcode"></td>
     <td class="num"><input type="number" step="0.01" min="0" value="${(p.price_cents / 100).toFixed(2)}" data-f="price"></td>
     <td style="text-align:center"><input type="checkbox" data-f="tracked" ${p.track_stock ? 'checked' : ''}></td>
     <td class="num"><input type="number" step="1" value="${p.stock}" data-f="stock" ${p.track_stock ? '' : 'disabled'}></td>
     <td class="actions">
-      <button class="btn btn-go" data-a="save">Guardar</button>
       <button class="btn" data-a="photo">Foto</button>
       ${p.active
-        ? '<button class="btn btn-danger" data-a="del" title="Quitar del catálogo">×</button>'
-        : '<button class="btn btn-go" data-a="restore">Restaurar</button>'}
+        ? '<button class="btn btn-danger" data-a="del" title="Quitar del catálogo. Se puede restaurar.">×</button>'
+        : '<button class="btn btn-go" data-a="restore">Restaurar</button>' +
+          '<button class="btn btn-danger" data-a="purge" title="Borrar para siempre">Eliminar</button>'}
     </td>`
 
   const field = (name) => tr.querySelector(`[data-f="${name}"]`)
   const originalStock = String(p.stock)
 
-  // Goods sold loose have no unit count, so the quantity box goes dead the
-  // moment tracking is switched off.
-  field('tracked').onchange = (e) => { field('stock').disabled = !e.target.checked }
+  /* ------------------------------------------------------------ dirty state */
 
-  tr.querySelector('[data-a="save"]').onclick = async (e) => {
-    e.target.disabled = true
-    try {
-      const typedStock = field('stock').value
-      await api(`/api/products/${p.uuid}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: field('name').value.trim(),
-          barcode: field('barcode').value.trim() || null,
-          priceCents: Math.round(Number(field('price').value) * 100),
-          trackStock: field('tracked').checked,
-          // Only send stock when it actually changed, so saving a price edit
-          // does not stamp a stale count over what the register has counted.
-          stock: typedStock === originalStock ? undefined : typedStock,
-        }),
-      })
-      note($('products-status'), `${field('name').value} guardado`)
-      loadProducts()
-    } catch (err) {
-      note($('products-status'), `Error: ${err.message}`, 6000)
-      e.target.disabled = false
+  // What GUARDAR CAMBIOS will send for this row. Stock is deliberately omitted
+  // unless the admin typed a new number, so saving a price edit never stamps a
+  // stale count over what the register has been counting from sales.
+  const collect = () => {
+    const typedStock = field('stock').value
+    return {
+      uuid: p.uuid,
+      name: field('name').value.trim(),
+      barcode: field('barcode').value.trim() || null,
+      priceCents: Math.round(Number(field('price').value) * 100),
+      trackStock: field('tracked').checked,
+      stock: typedStock === originalStock ? undefined : typedStock,
     }
   }
+
+  const markDirty = () => {
+    dirtyRows.set(p.uuid, { tr, collect, name: () => field('name').value.trim() || p.name })
+    tr.classList.add('dirty')
+    refreshSaveButton()
+  }
+
+  for (const el of tr.querySelectorAll('[data-f]')) {
+    el.addEventListener('input', markDirty)
+    el.addEventListener('change', markDirty)
+  }
+
+  // Goods sold loose have no unit count, so the quantity box goes dead the
+  // moment tracking is switched off.
+  field('tracked').addEventListener('change', (e) => {
+    field('stock').disabled = !e.target.checked
+  })
+
+  /* ---------------------------------------------------------------- actions */
 
   tr.querySelector('[data-a="photo"]').onclick = () => {
     const picker = document.createElement('input')
@@ -380,9 +443,41 @@ function productRow(p) {
   // Restaurar is just flipping `active` back.
   const del = tr.querySelector('[data-a="del"]')
   if (del) del.onclick = async () => {
-    if (!confirm(`¿Quitar "${p.name}" del catálogo?\n\nSe puede restaurar después.`)) return
-    await api(`/api/products/${p.uuid}`, { method: 'DELETE' })
-    loadProducts()
+    const ok = await confirmDialog({
+      title: 'Quitar del catálogo',
+      text: `"${p.name}" dejará de aparecer en la caja.`,
+      warn: 'Se puede restaurar después desde esta misma lista.',
+      confirmLabel: 'QUITAR',
+    })
+    if (!ok) return
+    try {
+      await api(`/api/products/${p.uuid}`, { method: 'DELETE' })
+      loadProducts()
+    } catch (err) {
+      note($('products-status'), `Error: ${err.message}`, 6000)
+    }
+  }
+
+  // Hard delete. Only offered on rows that are already out of the catalogue, so
+  // the irreversible step is never one stray click away from a live product.
+  const purge = tr.querySelector('[data-a="purge"]')
+  if (purge) purge.onclick = async () => {
+    const ok = await confirmDialog({
+      title: 'Eliminar para siempre',
+      text: `"${p.name}" se borrará de esta lista y de la caja, definitivamente.`,
+      warn: 'Esto no se puede deshacer. Las ventas ya hechas no cambian: guardan el nombre y el precio de cuando se vendieron.',
+      confirmLabel: 'ELIMINAR PARA SIEMPRE',
+    })
+    if (!ok) return
+    purge.disabled = true
+    try {
+      await api(`/api/products/${p.uuid}?hard=1`, { method: 'DELETE' })
+      note($('products-status'), `${p.name} eliminado para siempre`)
+      loadProducts()
+    } catch (err) {
+      note($('products-status'), `Error: ${err.message}`, 6000)
+      purge.disabled = false
+    }
   }
 
   const restore = tr.querySelector('[data-a="restore"]')
@@ -411,6 +506,75 @@ function productRow(p) {
   if (p.image_file) loadThumb(tr.querySelector('.thumb'), p.image_file)
 
   return tr
+}
+
+/**
+ * Saves every edited row.
+ *
+ * Rows are sent one at a time and failures are collected rather than thrown:
+ * one bad price must not silently drop the other four edits the owner made, and
+ * they need to be told which row did not go through.
+ */
+async function saveAllProducts() {
+  const rows = [...dirtyRows.values()]
+  if (rows.length === 0) return
+
+  $('save-all').disabled = true
+  note($('products-status'), `Guardando ${rows.length}…`, 0)
+
+  const failed = []
+  for (const row of rows) {
+    const payload = row.collect()
+    try {
+      await api(`/api/products/${payload.uuid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch (err) {
+      failed.push(`${row.name()}: ${err.message}`)
+    }
+  }
+
+  if (failed.length === 0) {
+    note($('products-status'), rows.length === 1 ? 'Guardado' : `${rows.length} guardados`)
+  } else {
+    note($('products-status'), `No se guardó — ${failed.join(' · ')}`, 8000)
+  }
+  loadProducts()
+}
+
+/**
+ * A promise-shaped confirmation dialog.
+ *
+ * Resolves true only on the confirm button: the backdrop, Cancelar and Escape
+ * all resolve false, so a destructive path always needs a deliberate click.
+ */
+function confirmDialog({ title, text, warn, confirmLabel }) {
+  const backdrop = $('confirm-backdrop')
+  $('confirm-title').textContent = title
+  $('confirm-text').textContent = text
+  document.querySelector('.confirm-warn').textContent = warn
+  $('confirm-ok').textContent = confirmLabel
+  backdrop.classList.remove('hidden')
+  $('confirm-ok').focus()
+
+  return new Promise((resolve) => {
+    const onKey = (e) => { if (e.key === 'Escape') close(false) }
+    function close(answer) {
+      backdrop.classList.add('hidden')
+      $('confirm-ok').onclick = null
+      $('confirm-cancel').onclick = null
+      backdrop.onmousedown = null
+      document.removeEventListener('keydown', onKey)
+      resolve(answer)
+    }
+
+    $('confirm-ok').onclick = () => close(true)
+    $('confirm-cancel').onclick = () => close(false)
+    backdrop.onmousedown = (e) => { if (e.target === backdrop) close(false) }
+    document.addEventListener('keydown', onKey)
+  })
 }
 
 // Object URLs are revoked when the list reloads; without that, every refresh
@@ -444,6 +608,13 @@ function escapeHtml(s) {
 async function loadProducts() {
   const { products } = await api('/api/products')
   releaseThumbs()
+
+  // Rebuilding the table throws away the row objects the dirty map points at,
+  // so the map is emptied here rather than anywhere else. Anything unsaved is
+  // already gone from the DOM at this point.
+  dirtyRows.clear()
+  refreshSaveButton()
+
   const body = $('products-body')
   body.replaceChildren(...products.map(productRow))
   const gone = products.filter((p) => !p.active).length
@@ -475,6 +646,24 @@ function payBadge(sale) {
     if (detail) html += `<span class="pay-ref">${escapeHtml(detail)}</span>`
   }
   return html
+}
+
+/**
+ * Titles the page with the shop's own name.
+ *
+ * The name lives in the register's Configuración and rides up with each sync,
+ * so a server that has never been synced still has to render something: the
+ * heading falls back to the bare word until a register reports in.
+ */
+async function loadStoreName() {
+  try {
+    const { name } = await api('/api/store')
+    const title = name ? `Inventario — ${name}` : 'Inventario'
+    $('store-title').textContent = title
+    document.title = title
+  } catch {
+    // Cosmetic. A failure here must not stop the tables from loading.
+  }
 }
 
 async function loadSales() {
@@ -639,7 +828,26 @@ $('add').onclick = async () => {
   loadProducts()
 }
 
-$('refresh').onclick = () => loadProducts()
+$('save-all').onclick = saveAllProducts
+
+// Reloading throws away unsaved edits. With no per-row save button left, that
+// would be a silent loss of work, so it asks first — and only when there is
+// something to lose.
+$('refresh').onclick = async () => {
+  if (dirtyRows.size > 0) {
+    const ok = await confirmDialog({
+      title: 'Descartar cambios',
+      text: dirtyRows.size === 1
+        ? 'Hay 1 cambio sin guardar. Al actualizar se pierde.'
+        : `Hay ${dirtyRows.size} cambios sin guardar. Al actualizar se pierden.`,
+      warn: 'Guarda primero si quieres conservarlos.',
+      confirmLabel: 'DESCARTAR',
+    })
+    if (!ok) return
+  }
+  loadProducts()
+}
+
 $('logout').onclick = () => signOut('')
 
 $('enter').onclick = async () => {
@@ -650,6 +858,7 @@ $('enter').onclick = async () => {
     localStorage.setItem('posSyncKey', KEY)
     $('gate').classList.add('hidden')
     $('app').classList.remove('hidden')
+    loadStoreName()
     loadProducts()
   } catch {
     $('gate-error').textContent = 'No se pudo entrar. Revisa la clave.'
@@ -663,10 +872,27 @@ if (KEY) {
     .then(() => {
       $('gate').classList.add('hidden')
       $('app').classList.remove('hidden')
+      loadStoreName()
       loadProducts()
     })
     .catch(() => {})
 }
 </script>
+<!-- Permanent deletion is the one action here that cannot be undone, so it gets
+     a real dialog naming the product rather than a browser confirm() the owner
+     clicks through by reflex. -->
+<div id="confirm-backdrop" class="modal-backdrop hidden">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h3 id="confirm-title">Eliminar para siempre</h3>
+    <p id="confirm-text"></p>
+    <p class="confirm-warn">Esto no se puede deshacer. Las ventas ya hechas no cambian:
+       guardan el nombre y el precio de cuando se vendieron.</p>
+    <div class="modal-actions">
+      <button class="btn" id="confirm-cancel">Cancelar</button>
+      <button class="btn btn-danger" id="confirm-ok">ELIMINAR PARA SIEMPRE</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

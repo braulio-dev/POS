@@ -37,6 +37,9 @@ function config() {
     url: String(s.syncUrl || '').replace(/\/+$/, ''),
     key: String(s.syncKey || ''),
     storeId: String(s.syncStoreId || 'principal'),
+    // Pushed on every sync so the admin page can title itself with the name the
+    // owner typed into Configuración, rather than one hardcoded on the server.
+    storeName: String(s.storeName || ''),
     intervalSec: Math.max(15, Number(s.syncIntervalSec) || 60),
   }
 }
@@ -94,6 +97,7 @@ async function pushAndPull(cfg) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       storeId: cfg.storeId,
+      storeName: cfg.storeName || null,
       since: state.cursor || null,
       changes: pending.map((row) => ({
         entity: row.entity,

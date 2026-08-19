@@ -194,6 +194,11 @@ addColumnIfMissing('sales', 'card_brand', 'TEXT')
 addColumnIfMissing('sales', 'card_last4', 'TEXT')
 db.exec('UPDATE sales SET cash_cents = total_cents WHERE cash_cents IS NULL')
 
+// The register tells us what the shop is called, so the admin page can put the
+// owner's own name in its header instead of a hardcoded one. Registers that
+// predate this simply have no name until their next sync.
+addColumnIfMissing('stores', 'store_name', 'TEXT')
+
 addColumnIfMissing('cortes', 'cash_cents', 'INTEGER')
 addColumnIfMissing('cortes', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
 db.exec('UPDATE cortes SET cash_cents = total_cents WHERE cash_cents IS NULL')
@@ -580,11 +585,14 @@ const server = http.createServer(async (req, res) => {
 
       // Remember how far this register has got, so the purge never trims the
       // feed out from under it.
+      // COALESCE keeps a name we already know when a sync arrives without one,
+      // so an older register on the same store cannot blank it out.
       db.prepare(
-        `INSERT INTO stores (store_id, cursor, last_seen_at) VALUES (?, ?, ?)
+        `INSERT INTO stores (store_id, cursor, last_seen_at, store_name) VALUES (?, ?, ?, ?)
          ON CONFLICT(store_id) DO UPDATE SET
-           cursor = MAX(cursor, excluded.cursor), last_seen_at = excluded.last_seen_at`
-      ).run(origin, since, now())
+           cursor = MAX(cursor, excluded.cursor), last_seen_at = excluded.last_seen_at,
+           store_name = COALESCE(excluded.store_name, stores.store_name)`
+      ).run(origin, since, now(), body.storeName ? String(body.storeName).slice(0, 120) : null)
       const rows = db.prepare(
         `SELECT seq, entity, uuid, payload, at FROM changes
           WHERE seq > ? AND origin <> ? ORDER BY seq LIMIT 500`
@@ -730,6 +738,39 @@ const server = http.createServer(async (req, res) => {
 
       if (method === 'DELETE') {
         const at = now()
+
+        // Two different deletes, and the difference matters.
+        //
+        // The default is a SOFT delete: `active = 0`. The row stays, so a
+        // reprinted receipt and the sales list still resolve the product, and
+        // Restaurar is just flipping the flag back.
+        //
+        // `?hard=1` is the owner saying they want it gone for good — a typo, a
+        // duplicate, something that never should have existed. That is safe
+        // here because sales on this server snapshot their line items as JSON
+        // rather than pointing at products(uuid), so removing the row rewrites
+        // no history. The register keeps a real foreign key, so its own purge
+        // detaches the line items first; see applyRemoteChange in db.cjs.
+        if (url.searchParams.get('hard') === '1') {
+          db.prepare('DELETE FROM products WHERE uuid = ?').run(uuid)
+
+          // The photo would otherwise sit in the images directory forever, and
+          // /images would keep advertising a file nothing references.
+          if (existing.image_file) {
+            const stillUsed = db.prepare('SELECT 1 FROM products WHERE image_file = ? LIMIT 1')
+              .get(existing.image_file)
+            if (!stillUsed) {
+              try { fs.unlinkSync(path.join(IMAGE_DIR, existing.image_file)) } catch {}
+            }
+          }
+
+          // A distinct entity rather than a `product` change with a flag: a
+          // register that has not learned about purges must ignore this
+          // outright instead of half-applying it as an ordinary edit.
+          logChange('product-purge', uuid, { uuid, name: existing.name, updatedAt: at }, 'admin')
+          return json(res, 200, { ok: true, purged: true })
+        }
+
         db.prepare('UPDATE products SET active = 0, updated_at = ? WHERE uuid = ?').run(at, uuid)
         logChange('product', uuid, {
           uuid, barcode: existing.barcode, name: existing.name,
@@ -738,6 +779,18 @@ const server = http.createServer(async (req, res) => {
         }, 'admin')
         return json(res, 200, { ok: true })
       }
+    }
+
+    // What the shop calls itself, for the admin page header. Newest sync wins:
+    // with one register there is only one answer, and with several the one that
+    // reported most recently is the least stale.
+    if (route === '/api/store' && method === 'GET') {
+      const row = db.prepare(
+        `SELECT store_id, store_name FROM stores
+          WHERE store_name IS NOT NULL AND store_name <> ''
+          ORDER BY last_seen_at DESC LIMIT 1`
+      ).get()
+      return json(res, 200, { name: row ? row.store_name : null, storeId: row ? row.store_id : null })
     }
 
     if (route === '/api/maintenance' && method === 'GET') {
