@@ -32,6 +32,7 @@ quietly operate on `%APPDATA%/Electron` instead.
     electron/terminal.cjs  card terminal drivers (manual / Clip / Mercado Pago)
     src/lib/tender.ts      payment + tender policy <- has an open TODO
     src/lib/stock.ts       out-of-stock policy     <- has an open TODO
+    src/lib/weight.ts      granel policy: what a kilo costs, and what $50 weighs
     src/lib/money.ts       integer-cent maths and formatting
     electron/ipc.cjs       every renderer-reachable channel, shared with the harness
     electron/escpos.cjs    receipt + corte byte builder for the 58mm printer
@@ -49,9 +50,17 @@ process; the renderer can only ever ask "is this right?". The same password
 guards the Inventario screen, since changing what the shelf claims to hold is an
 owner action rather than a cashier one.
 
-Tabs: **General** (store name), **Impresora**, **Corte** (cash threshold and the
-low-stock mark), **Terminal** (card payments), **Sincronización**, **Respaldos**
-(the server's backup list, with a "respaldar ahora" button), **Seguridad**.
+Tabs: **General** (store name), **Impresora**, **Corte** (cash threshold, fondo
+de caja and the low-stock mark), **Terminal** (card payments),
+**Sincronización**, **Respaldos** (the server's backup list, with a "respaldar
+ahora" button), **Seguridad**.
+
+Two header buttons are deliberately *not* behind the password: **Tickets**
+(reprinting) and **Entradas y salidas** (cash movements). Neither is an owner
+decision — a reprint moves no money, and a salida happens whether or not the
+owner is in the shop. Locking the second one would not stop the money leaving;
+it would only stop the record of it being made, which is precisely the
+unexplained faltante the corte exists to catch.
 
 ## Paying with a card terminal
 
@@ -90,6 +99,40 @@ verified against a live device** — check them against the credentials Clip
 issues your store before turning "mandar el monto a la terminal" on. Manual
 capture needs none of this and is complete as shipped.
 
+## Selling by weight (granel)
+
+**A product without Inventario is sold by the kilo.** That is the whole rule,
+and it is deliberately the switch that already existed rather than a second one:
+`track_stock = 0` always meant "this has no pieces to count", and a thing with
+no pieces has to be measured some other way. Ticking the box means pieces and a
+price per piece; unticking it means kilos and a price per kilo.
+
+Tapping such a product does not add a line — there is no "one" frijol. It opens
+the scale screen, which takes the sale from either end of the counter
+conversation:
+
+- **Por peso** — the cashier reads the scale and types `1.35`. Quarter, half,
+  one and two kilo shortcuts cover most of it in a single tap.
+- **Por importe** — "me da $50 de jamón". The customer named the money, so the
+  money is exact and the weight is what gets solved for; the slicer is told how
+  much to cut instead of the customer being handed $49.60 worth and a shrug.
+
+Either way the line stores both facts — what was weighed and what it cost — and
+the money is rounded to the centavo exactly once, when the line is added. Every
+screen and the printed ticket read that stored figure rather than re-deriving
+`precio × kilos`, because two roundings on two code paths is how a receipt ends
+up with lines that do not add up to the total printed under them.
+
+Each weighing is its own line. Two trips to the scale are two facts, and a
+customer querying the ticket is querying one of them; collapsing them into a
+single "1.600 kg" would be correct in total and unable to show where either half
+came from. Tapping a weighed line removes it outright — the cashier re-weighs
+rather than editing a number they cannot see.
+
+Stock is never moved by a weight line, from either side: the product is
+untracked, and the line's own unit says kg. Both have to hold before a count
+changes.
+
 ## Inventory
 
 Every product carries a `stock` count. Sales decrement it inside the same
@@ -119,6 +162,58 @@ Once cash taken since the last corte passes the threshold (default $2,000,
 set it to 0 to switch the reminder off), a banner appears above the footer and
 stays until the cut is made.
 
+### What the drawer should hold
+
+The cut is a reconciliation, not a report. Five numbers make it:
+
+    fondo inicial + efectivo de ventas + entradas − salidas = ESPERADO
+                                                   contado = CONTADO
+                                             contado − esperado = DIFERENCIA
+
+**Fondo inicial** is whatever the previous cut deliberately left behind, so the
+periods chain and the fondo can never be double counted. Only the very first cut
+on a fresh register has no predecessor; that one falls back to Configuración →
+Corte.
+
+**Entradas y salidas** are cash that moved for a reason that is not a sale —
+paying the tortilla delivery out of the till, a retiro to the back room, the
+owner dropping in change. Recording them is what makes the difference figure
+mean anything: without somewhere to write them down, every legitimate errand
+shows up at closing time as an unexplained faltante, and a cashier blamed for
+four faltantes they can explain stops believing the fifth one matters. A reason
+is required; the money is not, which is why the screen is not locked.
+
+**Contado** is the one figure on the whole slip that cannot be rebuilt later.
+Everything else is derivable from the sales table years from now; what was
+physically in the drawer exists for ten seconds on a counter and then is gone.
+So the cut will not go through without it — and the field is never prefilled
+with the expected amount, because a count that starts from the answer is a
+confirmation, not a count.
+
+A difference **does not block the cut**. The money is already however much it
+is; refusing to close would leave the drawer open, the period unclosed and the
+discrepancy unrecorded, which is strictly worse than writing it down. Nor is it
+absorbed: `expected_cents` keeps saying what the books think and `counted_cents`
+what the room says, so the disagreement survives to be looked at — in the corte
+list in Configuración and in the admin page's Cortes tab.
+
+### What the slip says
+
+The ticket ends in two signature lines, **Entrega** and **Recibe**, and that is
+what decides its headline. A signature says "this much money passed from my
+hands to yours", so the big number above it is **ENTREGA**: what was counted,
+minus the fondo staying behind for the next shift. Printing the period's takings
+there would have two people signing for a figure neither of them ever held.
+
+Above it, the arithmetic that got there — fondo, ventas, entradas, salidas,
+esperado, contado, and FALTAN/SOBRAN with the word before the number. A cut that
+prints only its conclusion cannot be checked by the person signing for it.
+
+Cuts taken before any of this existed print exactly the slip they always
+printed: their `counted_cents` is NULL, which means "nobody was asked", and that
+is shown as *sin conteo* rather than as a difference of zero. "Nobody checked"
+and "it balanced" are opposite pieces of news and must never look the same.
+
 **Cash counted is the cash leg of each sale** — not the sale total, and not the
 amount handed over. Money that went through the card terminal never entered the
 drawer, and change came back out of it. The threshold is measured against cash
@@ -126,10 +221,9 @@ only: card takings sitting in a Clip account are not a reason to walk to the
 back with a bag of money, and letting them trip the banner would train the
 cashier to ignore it.
 
-A corte therefore records three numbers — total sold, card, and cash — and the
-slip prints the cash figure as its headline, because that is what the cashier
-physically counts out. The cut commits to SQLite before anything is spooled, so
-an out-of-paper printer costs a slip and never the record.
+A corte therefore records total sold, card and cash alongside the reconciliation
+above. The cut commits to SQLite before anything is spooled, so an out-of-paper
+printer costs a slip and never the record.
 
 ## Where the data lives
 
@@ -172,11 +266,26 @@ Printing never blocks a sale: the sale commits to SQLite and the change screen
 appears first, then the ticket spools. A dead printer costs you a ticket, never
 a recorded sale.
 
+## Reprinting a ticket
+
+The register has always been able to survive a dead printer — the sale commits
+to SQLite before anything is spooled — but until now surviving it cost the
+ticket permanently. The receipt icon in the header lists the last thirty sales
+with a REIMPRIMIR button on each, and the change screen carries one for the sale
+just closed, which is where a missing ticket is usually noticed.
+
+A reprint takes **only a uuid**. The slip is rebuilt in the main process from
+what was recorded, so a copy is physically incapable of showing a price, a total
+or a payment method the sale does not have on file. It comes out stamped
+**\*\*\* COPIA \*\*\*** under the header, so it cannot be handed over — or added
+up at the end of the week — as a second sale.
+
 ## Not built yet
 
 Editing and deleting products from the register's own UI (the browser admin page
-on the server does both), voids and refunds, a per-product "sold loose, do not
-track stock" flag, and reprinting a past ticket.
+on the server does both), voids and refunds, and scale barcodes (the EAN-13
+codes beginning with `2` that carry the weight or price in their digits — weight
+is typed by hand today).
 
 Demo product photos come from Wikimedia under CC licences — fine as
 placeholders, but shoot the real shelf before this runs the store.

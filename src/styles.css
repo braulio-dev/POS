@@ -77,6 +77,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .icon-btn {
   flex: 0 0 auto;
+  /* Anchors the movement count badge in the corner of the caja button. */
+  position: relative;
   display: grid;
   place-items: center;
   width: 44px;
@@ -1019,3 +1021,258 @@ select.text-input { appearance: auto; }
   white-space: nowrap;
   font-size: 14px;
 }
+
+/* ---------- Weighing (granel) ---------- */
+
+/* Same frame as the product dialog: this is the same kind of moment — a few
+   fields and one confirm — and a second dialog shape would make the cashier
+   re-learn where the buttons are. */
+.weight-modal {
+  padding: 24px;
+  width: 460px;
+  max-width: 94vw;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.weight-price {
+  margin: -6px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.weight-tabs, .movement-kind {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.weight-tab, .movement-tab {
+  padding: 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+.weight-tab.is-active {
+  border-color: var(--green);
+  background: var(--green-tint);
+  color: var(--green-dark);
+}
+.movement-tab.is-active.is-out {
+  border-color: var(--red);
+  background: #ffebee;
+  color: var(--red-dark);
+}
+.movement-tab.is-active.is-in {
+  border-color: var(--green);
+  background: var(--green-tint);
+  color: var(--green-dark);
+}
+
+/* Typed at arm's length while holding a bag of frijol in the other hand. */
+.weight-input {
+  font-size: 30px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.weight-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.weight-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.weight-chip:hover { background: var(--green-tint); border-color: var(--green-soft); }
+.weight-chip strong { font-size: 16px; }
+.weight-chip em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The number the customer is about to be charged, at a size that is readable
+   from where the cashier stands rather than from where they type. */
+.weight-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  background: var(--green-tint);
+  min-height: 62px;
+}
+.weight-result-qty { font-size: 18px; font-weight: 600; color: var(--green-dark); font-variant-numeric: tabular-nums; }
+.weight-result-total { font-size: 32px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.weight-result-empty { font-size: 15px; color: var(--muted); }
+
+/* A weighed cart row states its weight where a piece count would go. */
+.cart-qty-kg { font-variant-numeric: tabular-nums; }
+
+/* ---------- Cash in and out ---------- */
+
+.cash-modal {
+  padding: 24px;
+  width: 520px;
+  max-width: 94vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.reason-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.reason-chip {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--field);
+  font-size: 13px;
+  color: var(--muted);
+}
+.reason-chip:hover { background: var(--green-tint); border-color: var(--green-soft); color: var(--green-dark); }
+
+.movement-list {
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  max-height: 30vh;
+}
+.movement-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.movement-time { color: var(--faint); font-variant-numeric: tabular-nums; }
+.movement-reason { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.movement-reason em { font-style: normal; color: var(--muted); }
+.movement-amount { font-weight: 700; font-variant-numeric: tabular-nums; }
+.movement-out .movement-amount { color: var(--red); }
+.movement-in .movement-amount { color: var(--green-dark); }
+
+/* Count on the header button: only drawn when the period has movements that
+   the corte will have to explain. */
+.icon-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--amber);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* ---------- Corte verdict ---------- */
+
+.corte-verdict {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 600;
+}
+.corte-verdict strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+.corte-verdict.is-ok { background: var(--green-tint); color: var(--green-dark); }
+.corte-verdict.is-short { background: #ffebee; color: var(--red-dark); }
+/* Over is not good news either — money the books cannot account for is the same
+   kind of unexplained as money missing — so it is marked, not congratulated. */
+.corte-verdict.is-over { background: #fff8e1; color: var(--amber-dark); }
+
+.corte-short { font-style: normal; color: var(--red); }
+.corte-over { font-style: normal; color: var(--amber-dark); }
+
+/* ---------- Recent tickets ---------- */
+
+.tickets-modal {
+  padding: 24px;
+  width: 540px;
+  max-width: 94vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tickets-scroll { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+
+.ticket-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--field);
+}
+.ticket-card-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.ticket-when { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ticket-total { margin-left: auto; font-size: 18px; font-variant-numeric: tabular-nums; }
+
+.pay-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  background: var(--line);
+  color: var(--muted);
+}
+.pay-card { background: #e3f2fd; color: #0d47a1; }
+.pay-mixed { background: #fff8e1; color: var(--amber-dark); }
+
+.ticket-items {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.ticket-item { white-space: nowrap; }
+
+.ticket-reprint { align-self: end; font-size: 13px; padding: 8px 14px; }
+
+/* Reprinting from the change screen: available, but visibly not the way out —
+   the screen still clears on a touch anywhere else. */
+.change-reprint {
+  margin-top: 28px;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #ffffff;
+  font-size: 14px;
+  letter-spacing: 1px;
+}
+.change-reprint:hover { background: rgba(255, 255, 255, 0.14); }
+.change-print-note { margin: 8px 0 0; font-size: 14px; color: #dcedc8; }

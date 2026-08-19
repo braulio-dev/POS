@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('pos', {
   getCashDrawer: () => ipcRenderer.invoke('cash:drawer'),
   recordCorte: (options) => ipcRenderer.invoke('cash:corte', options ?? {}),
   listCortes: (limit) => ipcRenderer.invoke('cash:listCortes', limit ?? 20),
+  listMovements: () => ipcRenderer.invoke('cash:movements'),
+  recordMovement: (input) => ipcRenderer.invoke('cash:movement', input),
+
+  listRecentSales: (limit) => ipcRenderer.invoke('sales:recent', limit ?? 30),
+  reprintReceipt: (uuid) => ipcRenderer.invoke('printer:reprint', uuid),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSetting: (key, value) => ipcRenderer.invoke('settings:set', key, value),

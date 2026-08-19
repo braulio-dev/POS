@@ -144,14 +144,33 @@ function buildReceipt(sale, storeName = 'Abarrotes "El Paisa"') {
     CMD.sizeNormal,
     CMD.boldOff,
     line(timestamp(sale.createdAt)),
+    // A reprint says so, in the place the eye lands first. Two identical slips
+    // for one sale is how a till ends up double counted by whoever adds them up
+    // at the end of the week, and the customer holding the copy has no way to
+    // know it is one unless the paper says it.
+    ...(sale.reprint ? [CMD.boldOn, line('*** COPIA ***'), CMD.boldOff] : []),
     CMD.alignLeft,
     line(rule()),
   ]
 
   for (const item of sale.items) {
-    const label = item.qty > 1 ? `${item.qty} x ${item.name}` : item.name
-    parts.push(line(columns(label, money(item.unitPriceCents * item.qty))))
-    if (item.qty > 1) {
+    const qty = Number(item.qty) || 0
+    // Lines rung up before granel existed carry neither field, and were piezas
+    // priced at unit x qty — which is what these fallbacks reproduce.
+    const lineTotal = item.lineTotalCents ?? Math.round(item.unitPriceCents * qty)
+
+    if (item.unit === 'kg') {
+      // The weight goes on its own line under the name rather than in front of
+      // it: "1.350 kg" plus a product name will not fit in 32 columns beside a
+      // price, and the price is the part that must never be truncated.
+      parts.push(line(columns(item.name, money(lineTotal))))
+      parts.push(line(`   ${qty.toFixed(3)} kg @ ${money(item.unitPriceCents)}/kg`))
+      continue
+    }
+
+    const label = qty > 1 ? `${qty} x ${item.name}` : item.name
+    parts.push(line(columns(label, money(lineTotal))))
+    if (qty > 1) {
       parts.push(line(`   @ ${money(item.unitPriceCents)} c/u`))
     }
   }
@@ -211,6 +230,18 @@ function buildTestPage() {
  * The corte ticket: the slip the cashier tears off when they hand over the cash.
  * It states the period it covers, because "$2,340" on its own is unauditable a
  * week later when three cortes were taken the same day.
+ *
+ * The slip ends in two signature lines — Entrega and Recibe — and that is what
+ * decides its headline. A signature says "this much money passed from my hands
+ * to yours", so the big number above it has to be the amount that physically
+ * moves: what was counted, minus the fondo staying behind for the next shift.
+ * Printing the period's takings there instead would have two people signing for
+ * a figure neither of them ever held.
+ *
+ * Above it, the arithmetic that got there, in the order it happened: what the
+ * drawer started with, what the sales added, what came in and went out, what
+ * that adds up to, and what was actually found. A cut that only prints its
+ * conclusion cannot be checked by the person signing for it.
  */
 function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
   // Cuts taken before the terminal existed carry no split, and every peso in
@@ -219,6 +250,54 @@ function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
   const cashCents = corte.cashCents === undefined || corte.cashCents === null
     ? Number(corte.totalCents) - cardCents
     : Number(corte.cashCents)
+
+  const floatStart = Number(corte.floatStartCents) || 0
+  const cashIn = Number(corte.cashInCents) || 0
+  const cashOut = Number(corte.cashOutCents) || 0
+  const expected = corte.expectedCents === undefined || corte.expectedCents === null
+    ? cashCents
+    : Number(corte.expectedCents)
+
+  // Null means nobody was asked to count — a cut taken before the register
+  // started asking. Those print exactly the slip they always printed rather
+  // than a reconciliation against a count of zero that never happened.
+  const counted = corte.countedCents === undefined || corte.countedCents === null
+    ? null
+    : Number(corte.countedCents)
+
+  const floatLeft = Number(corte.floatLeftCents) || 0
+  const inDrawer = counted === null ? expected : counted
+  const delivered = corte.deliveredCents === undefined || corte.deliveredCents === null
+    ? Math.max(0, inDrawer - floatLeft)
+    : Number(corte.deliveredCents)
+  const difference = counted === null ? null : counted - expected
+
+  // Only worth the paper when it moved. A row of zeroes for a shift where
+  // nothing came in or out is noise on the one slip that has to be read
+  // carefully, and noise is what teaches people to stop reading it.
+  const movementLines = []
+  if (floatStart > 0 || cashIn > 0 || cashOut > 0) {
+    movementLines.push(line(columns('FONDO INICIAL', money(floatStart))))
+    movementLines.push(line(columns('EFECTIVO VENTAS', money(cashCents))))
+    if (cashIn > 0) movementLines.push(line(columns('ENTRADAS', money(cashIn))))
+    // Printed negative rather than as a bare figure: it is the only row on the
+    // slip that subtracts, and a reader adding the column up must see that.
+    if (cashOut > 0) movementLines.push(line(columns('SALIDAS', money(-cashOut))))
+    movementLines.push(line(rule()))
+  }
+
+  const countLines = counted === null ? [] : [
+    line(columns('ESPERADO', money(expected))),
+    line(columns('CONTADO', money(counted))),
+    // The word before the number, because "-$20.00" alone gets read as a
+    // formatting artefact. FALTAN and SOBRAN are what the owner will say out
+    // loud when they ask about it.
+    line(columns(
+      difference === 0 ? 'CUADRA' : difference < 0 ? 'FALTAN' : 'SOBRAN',
+      difference === 0 ? 'exacto' : money(Math.abs(difference))
+    )),
+    line(rule()),
+  ]
 
   return Buffer.concat([
     CMD.init,
@@ -250,11 +329,19 @@ function buildCorte(corte, storeName = 'Abarrotes "El Paisa"') {
       line(rule()),
     ] : []),
 
+    ...movementLines,
+    ...countLines,
+
+    // What stays behind. Printed immediately above the amount handed over, so
+    // the two read as one subtraction rather than as two unrelated figures.
+    ...(floatLeft > 0 ? [line(columns('QUEDA DE FONDO', money(floatLeft)))] : []),
+
     CMD.boldOn,
     CMD.sizeDoubleHeight,
-    // Cash only — this is the number the cashier physically counts out. Printing
-    // the sales total here is precisely the desync this split exists to stop.
-    line(columns('EFECTIVO', money(cashCents), WIDTH)),
+    // Cash only, and only the part that actually moves — this is the figure the
+    // two signatures below are for. Printing the sales total here is precisely
+    // the desync the cash/card split exists to stop.
+    line(columns('ENTREGA', money(delivered), WIDTH)),
     CMD.sizeNormal,
     CMD.boldOff,
     line(rule()),

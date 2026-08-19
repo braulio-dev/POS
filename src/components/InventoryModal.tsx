@@ -142,7 +142,13 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
                             door than the books ever had in. */}
                         {level === 'over' && <span className="recount-flag">recontar</span>}
                       </td>
-                      <td className="num">{formatMoney(p.price_cents)}</td>
+                      {/* A product without Inventario is sold by weight, so its
+                          price is a price per kilo and has to say so — the same
+                          number means two different things in this column. */}
+                      <td className="num">
+                        {formatMoney(p.price_cents)}
+                        {!tracked && <span className="muted-note"> /kg</span>}
+                      </td>
                       <td className="tracked-col">
                         {/* Off for goods sold by weight, so they stop reporting
                             AGOTADO forever and drowning the real warnings. */}
@@ -181,8 +187,10 @@ export function InventoryModal({ lowStockAt, onClose }: Props) {
 
         <p className="muted-note">
           <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza.
-          Desmárcalo para cosas a granel — frijol por kilo, bolsas — que no tienen
-          conteo y si no, saldrían siempre como AGOTADO.
+          Desmárcalo para lo que se vende <strong>a granel</strong> — frijol,
+          queso, jamón. Eso hace dos cosas: deja de contarlo (si no, saldría
+          siempre como AGOTADO) y su precio pasa a ser <strong>por kilo</strong>,
+          así que en la caja se pide el peso en vez de agregar una pieza.
         </p>
 
         {status && <p className="settings-status">{status}</p>}

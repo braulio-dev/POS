@@ -156,9 +156,23 @@ db.exec(`
     last_seen_at TEXT    NOT NULL
   );
 
+  -- Cash that moved for a reason other than a sale, mirroring the register's
+  -- own table. Pushed up so the admin page can explain a corte that did not
+  -- balance instead of only reporting that it did not.
+  CREATE TABLE IF NOT EXISTS cash_movements (
+    uuid         TEXT PRIMARY KEY,
+    store_id     TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    reason       TEXT    NOT NULL,
+    person       TEXT,
+    created_at   TEXT    NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
   CREATE INDEX IF NOT EXISTS idx_cortes_created ON cortes(created_at);
   CREATE INDEX IF NOT EXISTS idx_changes_at ON changes(at);
+  CREATE INDEX IF NOT EXISTS idx_movements_created ON cash_movements(created_at);
 `)
 
 // Goods sold loose have no unit count; see src/lib/stock.ts on the register.
@@ -202,6 +216,19 @@ addColumnIfMissing('stores', 'store_name', 'TEXT')
 addColumnIfMissing('cortes', 'cash_cents', 'INTEGER')
 addColumnIfMissing('cortes', 'card_cents', 'INTEGER NOT NULL DEFAULT 0')
 db.exec('UPDATE cortes SET cash_cents = total_cents WHERE cash_cents IS NULL')
+
+// The reconciliation, added when the register started asking the cashier to
+// count the drawer. Mirrors electron/db.cjs column for column, and all of it
+// nullable for the same reason: a cut taken before anyone was asked to count
+// must stay readable rather than claim a count of zero nobody ever made.
+addColumnIfMissing('cortes', 'float_start_cents', 'INTEGER NOT NULL DEFAULT 0')
+addColumnIfMissing('cortes', 'cash_in_cents', 'INTEGER NOT NULL DEFAULT 0')
+addColumnIfMissing('cortes', 'cash_out_cents', 'INTEGER NOT NULL DEFAULT 0')
+addColumnIfMissing('cortes', 'expected_cents', 'INTEGER')
+addColumnIfMissing('cortes', 'counted_cents', 'INTEGER')
+addColumnIfMissing('cortes', 'float_left_cents', 'INTEGER NOT NULL DEFAULT 0')
+addColumnIfMissing('cortes', 'difference_cents', 'INTEGER')
+db.exec('UPDATE cortes SET expected_cents = cash_cents WHERE expected_cents IS NULL')
 
 db.exec('CREATE INDEX IF NOT EXISTS idx_sales_method ON sales(payment_method)')
 
@@ -322,13 +349,49 @@ function applyCorte(payload, storeId) {
     ? total - card
     : Number(payload.cashCents)
 
+  // A register that has not been updated yet sends no reconciliation at all.
+  // Its cuts expected exactly the cash they reported — there was no fondo and
+  // nowhere to record a movement — so filling that in is exact, and counted
+  // stays null to say honestly that nobody was asked.
+  const expected = payload.expectedCents === undefined || payload.expectedCents === null
+    ? cash
+    : Number(payload.expectedCents)
+
   db.prepare(
     `INSERT OR IGNORE INTO cortes (uuid, store_id, total_cents, cash_cents, card_cents,
-                                   sale_count, cashier, opened_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                                   sale_count, cashier, opened_at, created_at,
+                                   float_start_cents, cash_in_cents, cash_out_cents,
+                                   expected_cents, counted_cents, float_left_cents,
+                                   difference_cents)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     payload.uuid, storeId, total, cash, card, payload.saleCount,
-    payload.cashier ?? null, payload.openedAt, payload.createdAt
+    payload.cashier ?? null, payload.openedAt, payload.createdAt,
+    Number(payload.floatStartCents) || 0,
+    Number(payload.cashInCents) || 0,
+    Number(payload.cashOutCents) || 0,
+    expected,
+    payload.countedCents === undefined || payload.countedCents === null
+      ? null
+      : Number(payload.countedCents),
+    Number(payload.floatLeftCents) || 0,
+    payload.differenceCents === undefined || payload.differenceCents === null
+      ? null
+      : Number(payload.differenceCents)
+  )
+  return true
+}
+
+/** Cash in and out of the drawer. Push-only, like sales and cortes. */
+function applyMovement(payload, storeId) {
+  db.prepare(
+    `INSERT OR IGNORE INTO cash_movements (uuid, store_id, kind, amount_cents,
+                                           reason, person, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    payload.uuid, storeId, payload.kind === 'out' ? 'out' : 'in',
+    Math.abs(Math.trunc(Number(payload.amountCents) || 0)),
+    String(payload.reason ?? ''), payload.person ?? null, payload.createdAt
   )
   return true
 }
@@ -573,6 +636,7 @@ const server = http.createServer(async (req, res) => {
           else if (change.entity === 'stock') applyStock(payload, origin)
           else if (change.entity === 'sale') applySale(payload, origin)
           else if (change.entity === 'corte') applyCorte(payload, origin)
+          else if (change.entity === 'movement') applyMovement(payload, origin)
         }
         db.exec('COMMIT')
       } catch (err) {
@@ -838,6 +902,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, {
         cortes: db.prepare('SELECT * FROM cortes ORDER BY created_at DESC LIMIT 100').all(),
       })
+    }
+
+    if (route === '/api/movements' && method === 'GET') {
+      const movements = db.prepare(
+        'SELECT * FROM cash_movements ORDER BY created_at DESC LIMIT 100'
+      ).all()
+      // Totalled over the same rows the table shows, for the same reason the
+      // sales totals are: a figure at the top that disagrees with the list
+      // underneath it gets the whole screen mistrusted.
+      const totals = movements.reduce((acc, m) => ({
+        inCents: acc.inCents + (m.kind === 'in' ? m.amount_cents : 0),
+        outCents: acc.outCents + (m.kind === 'out' ? m.amount_cents : 0),
+      }), { inCents: 0, outCents: 0 })
+
+      return json(res, 200, { movements, totals })
     }
 
     return json(res, 404, { error: 'not found' })

@@ -2,9 +2,15 @@ interface Props {
   storeName: string
   onOpenSettings: () => void
   onOpenInventory: () => void
+  onOpenTickets: () => void
+  onOpenCash: () => void
+  /** Shown on the cash button while the period has movements to explain. */
+  movementCount: number
 }
 
-export function Header({ storeName, onOpenSettings, onOpenInventory }: Props) {
+export function Header({
+  storeName, onOpenSettings, onOpenInventory, onOpenTickets, onOpenCash, movementCount,
+}: Props) {
   return (
     <header className="header">
       <button className="icon-btn" onClick={onOpenSettings} aria-label="Configuración" title="Configuración">
@@ -19,6 +25,25 @@ export function Header({ storeName, onOpenSettings, onOpenInventory }: Props) {
           nothing around: the spacer below absorbs the slack. */}
       <h1 className="store-title">{storeName}</h1>
       <span className="header-spacer" />
+
+      {/* Tickets and caja are cashier tools and carry no password: reprinting a
+          slip changes no money, and a salida happens whether or not the owner
+          is in the shop — locking it would only stop it being written down. */}
+      <button className="icon-btn" onClick={onOpenTickets} aria-label="Tickets" title="Tickets recientes">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <path d="M6 3h12v18l-3-2-3 2-3-2-3 2z" />
+          <path d="M9 8h6M9 12h6" strokeLinecap="round" />
+        </svg>
+      </button>
+
+      <button className="icon-btn" onClick={onOpenCash} aria-label="Entradas y salidas" title="Entradas y salidas de efectivo">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round">
+          <rect x="2.5" y="6" width="19" height="12" rx="2" />
+          <circle cx="12" cy="12" r="2.6" />
+        </svg>
+        {/* Only when there is something to explain at the corte. */}
+        {movementCount > 0 && <span className="icon-badge">{movementCount}</span>}
+      </button>
 
       {/* Inventory sits behind the same password as Configuración: changing
           what the shelf says it holds is an owner action, not a cashier one. */}

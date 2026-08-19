@@ -1,5 +1,6 @@
 import type {
-  CorteRow, NewProductInput, PosApi, Product, Settings, StockEntry, SyncStatus,
+  CashMovement, CorteRow, MovementInput, NewProductInput, PosApi, Product,
+  SaleRecord, Settings, StockEntry, SyncStatus,
 } from '../types'
 
 /**
@@ -42,6 +43,7 @@ function createBrowserMock(): PosApi {
     storeName: 'Abarrotes "El Paisa"',
     corteThresholdCents: '200000',
     lowStockThreshold: '3',
+    cashFloatCents: '0',
     terminalEnabled: '1',
     terminalProvider: 'manual',
     terminalAutoCharge: '0',
@@ -65,7 +67,10 @@ function createBrowserMock(): PosApi {
   let drawerSales = 0
   let drawerCardSales = 0
   let openedAt = stamp
+  let floatCents = 0
   const cortes: CorteRow[] = []
+  const movements: CashMovement[] = []
+  const sales: SaleRecord[] = []
 
   const syncStatus: SyncStatus = {
     enabled: false, configured: false, pending: 0,
@@ -97,15 +102,32 @@ function createBrowserMock(): PosApi {
     async recordSale(sale) {
       for (const item of sale.items) {
         const p = products.find((x) => x.id === item.productId)
-        if (p && p.track_stock) p.stock -= item.qty
+        // Weight lines never move a count, exactly like the real one.
+        if (p && p.track_stock && item.unit !== 'kg') p.stock -= item.qty
       }
       drawerCents += sale.totalCents
       drawerCashCents += sale.cashCents ?? sale.totalCents
       drawerCardCents += sale.cardCents ?? 0
       drawerSales += 1
       if ((sale.cardCents ?? 0) > 0) drawerCardSales += 1
-      return { id: 0, uuid: 'mock', createdAt: new Date().toISOString() }
+
+      const record: SaleRecord = {
+        uuid: `mock-sale-${sales.length + 1}`,
+        createdAt: new Date().toISOString(),
+        totalCents: sale.totalCents,
+        receivedCents: sale.receivedCents,
+        changeCents: sale.changeCents,
+        paymentMethod: sale.paymentMethod,
+        cashCents: sale.cashCents,
+        cardCents: sale.cardCents,
+        items: sale.items,
+      }
+      sales.unshift(record)
+      return { id: sales.length, uuid: record.uuid, createdAt: record.createdAt }
     },
+
+    async listRecentSales(limit = 30) { return sales.slice(0, limit) },
+    async reprintReceipt() { return { ok: false, error: 'Sin impresora en el navegador' } },
     async pickImage() { return null },
 
     async listInventory() { return [...products] },
@@ -129,6 +151,11 @@ function createBrowserMock(): PosApi {
 
     async getCashDrawer() {
       const thresholdCents = Number(settings.corteThresholdCents) || 0
+      const cashInCents = movements.filter((m) => m.kind === 'in')
+        .reduce((sum, m) => sum + m.amountCents, 0)
+      const cashOutCents = movements.filter((m) => m.kind === 'out')
+        .reduce((sum, m) => sum + m.amountCents, 0)
+
       return {
         totalCents: drawerCents,
         cashCents: drawerCashCents,
@@ -139,10 +166,35 @@ function createBrowserMock(): PosApi {
         thresholdCents,
         // Cash only, exactly like the real one in electron/db.cjs.
         needsCorte: thresholdCents > 0 && drawerCashCents >= thresholdCents,
+        floatCents,
+        cashInCents,
+        cashOutCents,
+        movementCount: movements.length,
+        expectedCents: floatCents + drawerCashCents + cashInCents - cashOutCents,
       }
     },
+
+    async listMovements() { return [...movements] },
+    async recordMovement(input: MovementInput) {
+      const movement: CashMovement = {
+        uuid: `mock-mov-${movements.length + 1}`,
+        kind: input.kind,
+        amountCents: Math.abs(Math.trunc(input.amountCents)),
+        reason: input.reason,
+        person: input.person ?? null,
+        createdAt: new Date().toISOString(),
+      }
+      movements.unshift(movement)
+      return movement
+    },
+
     async recordCorte(options) {
       const cashier = String(options?.cashier ?? '').trim() || null
+      const drawer = await this.getCashDrawer()
+      const counted = options?.countedCents ?? null
+      const inDrawer = counted ?? drawer.expectedCents
+      const floatLeft = Math.min(Math.max(0, options?.floatLeftCents ?? 0), Math.max(0, inDrawer))
+
       const corte = {
         uuid: `mock-corte-${cortes.length + 1}`,
         createdAt: new Date().toISOString(),
@@ -152,18 +204,37 @@ function createBrowserMock(): PosApi {
         cardCents: drawerCardCents,
         saleCount: drawerSales,
         cashier,
+        floatStartCents: drawer.floatCents,
+        cashInCents: drawer.cashInCents,
+        cashOutCents: drawer.cashOutCents,
+        expectedCents: drawer.expectedCents,
+        countedCents: counted,
+        floatLeftCents: floatLeft,
+        deliveredCents: Math.max(0, inDrawer - floatLeft),
+        differenceCents: counted === null ? null : counted - drawer.expectedCents,
       }
       cortes.unshift({
         uuid: corte.uuid, total_cents: corte.totalCents,
         cash_cents: corte.cashCents, card_cents: corte.cardCents,
         sale_count: corte.saleCount,
         cashier, opened_at: corte.openedAt, created_at: corte.createdAt,
+        float_start_cents: corte.floatStartCents,
+        cash_in_cents: corte.cashInCents,
+        cash_out_cents: corte.cashOutCents,
+        expected_cents: corte.expectedCents,
+        counted_cents: corte.countedCents,
+        float_left_cents: corte.floatLeftCents,
+        difference_cents: corte.differenceCents,
       })
       drawerCents = 0
       drawerCashCents = 0
       drawerCardCents = 0
       drawerSales = 0
       drawerCardSales = 0
+      movements.length = 0
+      // The next period starts with whatever this cut left behind, exactly like
+      // the chain of cortes in electron/db.cjs.
+      floatCents = floatLeft
       openedAt = corte.createdAt
       return { corte, printed: { ok: false, error: 'Sin impresora en el navegador' } }
     },

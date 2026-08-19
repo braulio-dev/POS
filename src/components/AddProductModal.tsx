@@ -93,7 +93,11 @@ export function AddProductModal({ onSave, onCancel }: Props) {
 
         <div className="field-row">
           <label className="field">
-            <span>PRECIO</span>
+            {/* The label follows the Inventario switch, because the switch is
+                what decides which number this is. A field that says PRECIO
+                while the register is about to multiply it by 1.35 kilos is the
+                kind of quiet mismatch that only surfaces at the counter. */}
+            <span>{trackStock ? 'PRECIO' : 'PRECIO POR KILO'}</span>
             <input
               className="text-input"
               placeholder="0.00"
@@ -132,6 +136,17 @@ export function AddProductModal({ onSave, onCancel }: Props) {
               so the switch is recognisably the same switch in all three places. */}
           <span>Inventario</span>
         </label>
+
+        {/* Stated where the decision is made rather than in a help page. The
+            switch does two things at once — it stops the AGOTADO warnings and it
+            turns the price into a price per kilo — and only one of those is
+            obvious from its name. */}
+        {!trackStock && (
+          <p className="muted-note">
+            Sin inventario se vende <strong>a granel</strong>: el precio es por
+            kilo y la caja pide el peso en vez de agregar una pieza.
+          </p>
+        )}
 
         <div className="field">
           <span>IMAGEN</span>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { CartLine, CashDrawer, Product, Settings } from './types'
+import { formatMoney } from './lib/money'
 import { useBarcodeScanner } from './hooks/useBarcodeScanner'
 import { Header } from './components/Header'
 import { ProductGrid } from './components/ProductGrid'
@@ -11,7 +12,11 @@ import { InventoryModal } from './components/InventoryModal'
 import { PasswordPrompt } from './components/PasswordPrompt'
 import { CorteBanner } from './components/CorteBanner'
 import { CorteModal } from './components/CorteModal'
+import { WeightModal } from './components/WeightModal'
+import { CashMovementModal } from './components/CashMovementModal'
+import { TicketsModal } from './components/TicketsModal'
 import { checkStock } from './lib/stock'
+import { isSoldByWeight } from './lib/weight'
 import type { Tender } from './lib/tender'
 import { pos } from './lib/api'
 
@@ -24,8 +29,11 @@ type Overlay =
   | { kind: 'settings' }
   | { kind: 'inventory' }
   | { kind: 'corte' }
+  | { kind: 'cash' }
+  | { kind: 'tickets' }
   | { kind: 'payment' }
-  | { kind: 'change'; totalCents: number; tender: Tender }
+  | { kind: 'weigh'; product: Product }
+  | { kind: 'change'; totalCents: number; tender: Tender; saleUuid: string }
 
 export default function App() {
   const [products, setProducts] = useState<Product[]>([])
@@ -52,9 +60,13 @@ export default function App() {
   }), [refreshProducts])
 
   const lowStockAt = Number(settings?.lowStockThreshold ?? 3) || 0
+  const suggestedFloatCents = Number(settings?.cashFloatCents ?? 0) || 0
 
+  // Summed from each line's own total rather than recomputed from price × qty:
+  // a weighed line rounded to the centavo once when it was added, and the
+  // ticket, the cart and this total all have to be that same number.
   const totalCents = useMemo(
-    () => lines.reduce((sum, l) => sum + l.unitPriceCents * l.qty, 0),
+    () => lines.reduce((sum, l) => sum + l.lineTotalCents, 0),
     [lines]
   )
 
@@ -69,6 +81,14 @@ export default function App() {
    * identical lines the cashier has to count.
    */
   const addToCart = useCallback((product: Product) => {
+    // Anything without Inventario is sold by the kilo and cannot be added by
+    // tapping: there is no such thing as "one" frijol. It goes to the scale
+    // screen instead, which is the only place that knows what to charge.
+    if (isSoldByWeight(product)) {
+      setOverlay({ kind: 'weigh', product })
+      return
+    }
+
     // The stock rule lives in lib/stock.ts, not here: whether a thin shelf warns
     // or blocks is store policy, and policy belongs somewhere it can be read and
     // changed without picking through cart state.
@@ -92,18 +112,41 @@ export default function App() {
           name: product.name,
           unitPriceCents: product.price_cents,
           qty: 1,
+          unit: 'pza' as const,
+          lineTotalCents: product.price_cents,
         }]
       }
       const next = [...prev]
-      next[i] = { ...next[i], qty: next[i].qty + 1 }
+      const qty = next[i].qty + 1
+      next[i] = { ...next[i], qty, lineTotalCents: next[i].unitPriceCents * qty }
       return next
     })
   }, [lines, lowStockAt, showToast])
 
-  // Tapping a cart row removes one unit; the last unit removes the row.
+  /**
+   * Each weighing is its own line, never merged into an existing one.
+   *
+   * Two trips to the scale are two facts — 0.400 kg of queso and then 1.200 kg
+   * more — and a customer who queries the ticket is querying one of them.
+   * Collapsing them into "1.600 kg" would make the slip unarguable in the wrong
+   * direction: correct in total, unable to show where either half came from.
+   */
+  const addWeighed = useCallback((line: CartLine) => {
+    setLines((prev) => [...prev, line])
+    setOverlay({ kind: 'none' })
+  }, [])
+
+  // Tapping a cart row removes one unit; the last unit removes the row. A
+  // weighed line has no units to remove one of, so it goes in one tap — the
+  // cashier re-weighs rather than editing a number they cannot see.
   const removeOne = useCallback((index: number) => {
     setLines((prev) =>
-      prev.flatMap((l, i) => (i !== index ? [l] : l.qty > 1 ? [{ ...l, qty: l.qty - 1 }] : []))
+      prev.flatMap((l, i) => {
+        if (i !== index) return [l]
+        if (l.unit === 'kg' || l.qty <= 1) return []
+        const qty = l.qty - 1
+        return [{ ...l, qty, lineTotalCents: l.unitPriceCents * qty }]
+      })
     )
   }, [])
 
@@ -154,7 +197,7 @@ export default function App() {
     // only when `tender.cashCents > 0` — a pure card sale has no change to give.
     const sale = await pos.recordSale({ items, ...snapshot })
     setLines([])
-    setOverlay({ kind: 'change', totalCents, tender })
+    setOverlay({ kind: 'change', totalCents, tender, saleUuid: sale.uuid })
 
     // Stock moved and the drawer grew; both are read back from SQLite rather
     // than guessed at here, so the badge and the corte banner agree with what
@@ -185,6 +228,7 @@ export default function App() {
       <ChangeScreen
         totalCents={overlay.totalCents}
         tender={overlay.tender}
+        saleUuid={overlay.saleUuid}
         onDismiss={() => setOverlay({ kind: 'none' })}
       />
     )
@@ -196,6 +240,9 @@ export default function App() {
         storeName={settings?.storeName ?? ''}
         onOpenSettings={() => setOverlay({ kind: 'password', then: 'settings' })}
         onOpenInventory={() => setOverlay({ kind: 'password', then: 'inventory' })}
+        onOpenTickets={() => setOverlay({ kind: 'tickets' })}
+        onOpenCash={() => setOverlay({ kind: 'cash' })}
+        movementCount={drawer?.movementCount ?? 0}
       />
 
       <main className="body">
@@ -270,18 +317,46 @@ export default function App() {
         />
       )}
 
+      {overlay.kind === 'weigh' && (
+        <WeightModal
+          product={overlay.product}
+          onAdd={addWeighed}
+          onCancel={() => setOverlay({ kind: 'none' })}
+        />
+      )}
+
+      {overlay.kind === 'tickets' && (
+        <TicketsModal
+          onToast={showToast}
+          onClose={() => setOverlay({ kind: 'none' })}
+        />
+      )}
+
+      {overlay.kind === 'cash' && drawer && (
+        <CashMovementModal
+          drawer={drawer}
+          // The drawer figure this screen shows, the corte banner behind it and
+          // the badge in the header all read the same row, so every one of them
+          // has to be re-read after money moves.
+          onDone={refreshDrawer}
+          onClose={() => setOverlay({ kind: 'none' })}
+        />
+      )}
+
       {overlay.kind === 'corte' && drawer && (
         <CorteModal
           drawer={drawer}
+          suggestedFloatCents={suggestedFloatCents}
           onCancel={() => setOverlay({ kind: 'none' })}
           onDone={(corte, printed) => {
             setOverlay({ kind: 'none' })
             refreshDrawer()
             showToast(
-              // The cash figure, not the sales total: this is the number the
-              // cashier is about to count out of the drawer.
+              // What physically changes hands, not the period's takings: this is
+              // the number the cashier is about to count out of the drawer and
+              // the number on the slip's Entrega line.
               printed.ok
-                ? `Corte hecho: ${(corte.cashCents / 100).toFixed(2)} en efectivo`
+                ? `Corte hecho: entrega ${formatMoney(corte.deliveredCents)}`
                 : 'Corte guardado (no se imprimió el comprobante)'
             )
           }}

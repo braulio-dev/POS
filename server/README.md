@@ -297,8 +297,17 @@ Response:
 }
 ```
 
-Four entity types. `sale` and `corte` only ever travel upward — the register is
-the only place they happen. `product` and `stock` travel both ways.
+Five entity types. `sale`, `corte` and `movement` only ever travel upward — the
+register is the only place they happen. `product` and `stock` travel both ways.
+
+`movement` is cash in or out of the drawer for a reason that is not a sale: the
+fondo, a supplier paid out of the till, a retiro. It carries `kind` ('in' or
+'out'), a always-positive `amountCents`, a `reason` and an optional `person`.
+The direction lives in `kind` rather than in the sign, so no query can sum a mix
+of signs into a meaningless total. A `corte` also carries those movements
+totalled onto itself, plus what the drawer was expected to hold and what the
+cashier actually counted — denormalised deliberately, so a slip reprinted next
+year shows the same figures it showed on the day.
 
 They are **separate entities on purpose.** `product` carries name, barcode,
 price, photo, active flag and `trackStock`; `stock` carries only the quantity.

@@ -89,11 +89,19 @@ function registerIpc({ imageDir }) {
   ipcMain.handle('cash:drawer', () => db.getCashDrawer())
   ipcMain.handle('cash:listCortes', (_e, limit) => db.listCortes(limit))
 
+  // Cash in and out of the drawer for reasons that are not sales. No password:
+  // see the note on db.recordMovement for why locking it would only stop the
+  // record being made, never the money leaving.
+  ipcMain.handle('cash:movements', () => db.listMovements())
+  ipcMain.handle('cash:movement', (_e, input) => db.recordMovement(input))
+
   // Recording the corte and printing it are deliberately separate steps: the
   // cut is committed to SQLite first, so a printer that is out of paper costs
   // a slip of paper, never the record of the cash that was handed over.
-  ipcMain.handle('cash:corte', async (_e, { print = true, cashier = null } = {}) => {
-    const corte = db.recordCorte({ cashier })
+  ipcMain.handle('cash:corte', async (_e, {
+    print = true, cashier = null, countedCents = null, floatLeftCents = 0,
+  } = {}) => {
+    const corte = db.recordCorte({ cashier, countedCents, floatLeftCents })
     const settings = db.getSettings()
 
     if (!print) return { corte, printed: { ok: true } }
@@ -149,6 +157,30 @@ function registerIpc({ imageDir }) {
   })
 
   ipcMain.handle('printer:receipt', async (_e, sale) => {
+    const settings = db.getSettings()
+    try {
+      await printer.printReceipt(settings.printerName, sale, settings.storeName)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: String(err.message ?? err) }
+    }
+  })
+
+  /**
+   * Reprints a sale the register already recorded.
+   *
+   * Takes a uuid and nothing else. The ticket body is read back out of SQLite
+   * here rather than accepted from the renderer, so a reprint is physically
+   * incapable of showing a price, a total or a payment method that the sale
+   * does not actually have on file — and the slip it produces is stamped COPIA
+   * so it cannot be handed over as a second sale.
+   */
+  ipcMain.handle('sales:recent', (_e, limit) => db.listRecentSales(limit))
+
+  ipcMain.handle('printer:reprint', async (_e, uuid) => {
+    const sale = db.getSaleReceipt(uuid)
+    if (!sale) return { ok: false, error: 'Esa venta ya no está en el registro' }
+
     const settings = db.getSettings()
     try {
       await printer.printReceipt(settings.printerName, sale, settings.storeName)

@@ -102,6 +102,15 @@
   .hidden { display: none !important; }
   .stock-low { color: var(--red); font-weight: 700; }
 
+  /* Whether a corte balanced, and which way a movement went. Each carries its
+     own word as well as its colour, for the same reason the payment badges do:
+     a printed report is black and white, and so is a colour-blind reader. */
+  .ok    { color: var(--green-dark); font-weight: 700; }
+  .short { color: var(--red); font-weight: 700; font-variant-numeric: tabular-nums; }
+  /* A surplus is not good news either — it is money the books cannot explain,
+     the same class of problem as money missing — so it is marked, not praised. */
+  .over  { color: var(--amber-dark); font-weight: 700; font-variant-numeric: tabular-nums; }
+
   /* Payment indicators. Colour alone would not survive a black-and-white print
      or a colour-blind reader, so each badge carries its own word too. */
   .pay {
@@ -194,13 +203,15 @@
       <button class="tab" role="tab" data-view="products" aria-selected="true">Productos</button>
       <button class="tab" role="tab" data-view="sales" aria-selected="false">Ventas</button>
       <button class="tab" role="tab" data-view="cortes" aria-selected="false">Cortes</button>
+      <button class="tab" role="tab" data-view="movs" aria-selected="false">Entradas y salidas</button>
       <button class="tab" role="tab" data-view="mant" aria-selected="false">Mantenimiento</button>
     </div>
 
     <section id="view-products">
       <div class="row" style="margin-bottom:12px">
         <input id="new-name" type="text" placeholder="Nombre del producto nuevo">
-        <input id="new-price" type="number" step="0.01" min="0" placeholder="Precio" style="max-width:120px">
+        <input id="new-price" type="number" step="0.01" min="0" placeholder="Precio"
+               title="Sin inventario, este precio es por kilo." style="max-width:120px">
         <input id="new-stock" type="number" step="1" placeholder="Cant." style="max-width:100px">
         <label class="row" style="gap:6px;white-space:nowrap"
                title="Marca lo que se cuenta por pieza. Desmárcalo para cosas a granel.">
@@ -233,8 +244,10 @@
       </table>
       <p class="muted">
         <strong>Inventario</strong>: márcalo para lo que se cuenta por pieza. Desmárcalo
-        para cosas a granel — frijol por kilo, bolsas sueltas — que no tienen conteo y
-        si no, saldrían siempre como AGOTADO en la caja.<br>
+        para lo que se vende <strong>a granel</strong> — frijol, queso, jamón. Eso hace
+        dos cosas: deja de contarlo (si no, saldría siempre como AGOTADO en la caja) y
+        su precio pasa a ser <strong>por kilo</strong>, así que la caja pide el peso en
+        vez de agregar una pieza.<br>
         El botón <strong>×</strong> lo quita del catálogo: la fila se marca en rojo al
         final de la lista y <strong>Restaurar</strong> la revive. Sobre esa fila roja
         aparece <strong>Eliminar</strong>, que sí lo borra para siempre, aquí y en la
@@ -280,14 +293,37 @@
         <thead><tr>
           <th>Fecha</th><th class="hide-sm">Caja</th><th>Cajero</th>
           <th class="num">Ventas</th><th class="num hide-sm">Vendido</th>
-          <th class="num hide-sm">Tarjeta</th><th class="num">Efectivo</th>
+          <th class="num hide-sm">Tarjeta</th><th class="num hide-sm">Esperado</th>
+          <th class="num">Contado</th><th class="num">Diferencia</th>
         </tr></thead>
         <tbody id="cortes-body"></tbody>
       </table>
       <p class="muted" style="margin-top:12px">
-        <strong>Efectivo</strong> es lo que se sacó físicamente de la caja.
         <strong>Vendido</strong> incluye lo cobrado con terminal, que nunca entró
-        al cajón — por eso los dos números no coinciden en los días con tarjeta.
+        al cajón — por eso no coincide con el efectivo en los días con tarjeta.<br>
+        <strong>Esperado</strong> es lo que debía haber en el cajón: fondo del
+        turno + ventas en efectivo + entradas − salidas.
+        <strong>Contado</strong> es lo que el cajero contó de verdad, y la
+        <strong>diferencia</strong> entre los dos es el único número aquí que no
+        se puede reconstruir después. Los cortes viejos, de antes de que la caja
+        pidiera el conteo, aparecen sin él.
+      </p>
+    </section>
+
+    <section id="view-movs" class="hidden">
+      <div id="movs-totals" class="totals"></div>
+      <table>
+        <thead><tr>
+          <th>Fecha</th><th class="hide-sm">Caja</th><th>Tipo</th>
+          <th>Motivo</th><th class="hide-sm">Quién</th><th class="num">Monto</th>
+        </tr></thead>
+        <tbody id="movs-body"></tbody>
+      </table>
+      <p class="muted" style="margin-top:12px">
+        Dinero que entró o salió del cajón sin ser una venta: el fondo, un pago
+        al proveedor, un retiro a la caja fuerte. Es lo que explica por qué un
+        corte no cuadra con las puras ventas — sin estos registros, cada mandado
+        legítimo parecería un faltante.
       </p>
     </section>
   </main>
@@ -677,8 +713,7 @@ async function loadSales() {
 
   $('sales-body').replaceChildren(...sales.map((s) => {
     const tr = document.createElement('tr')
-    const items = JSON.parse(s.items || '[]')
-      .map((i) => `${i.qty}× ${i.name}`).join(', ')
+    const items = JSON.parse(s.items || '[]').map(itemLabel).join(', ')
     const card = s.card_cents ?? 0
     const cash = s.cash_cents ?? (s.total_cents - card)
 
@@ -692,19 +727,68 @@ async function loadSales() {
   }))
 }
 
+/**
+ * How one sold line reads in the artículos column.
+ *
+ * A line sold by weight carries kilos in `qty`, so the piece form would print
+ * "1.35× Frijol" — which looks like a data error rather than a kilo and a bit.
+ */
+function itemLabel(i) {
+  return i.unit === 'kg'
+    ? `${Number(i.qty).toFixed(3)} kg ${i.name}`
+    : `${i.qty}× ${i.name}`
+}
+
 async function loadCortes() {
   const { cortes } = await api('/api/cortes')
   $('cortes-body').replaceChildren(...cortes.map((c) => {
     const tr = document.createElement('tr')
     const card = c.card_cents ?? 0
     const cash = c.cash_cents ?? c.total_cents
+    const expected = c.expected_cents ?? cash
+    const diff = c.difference_cents
+
+    // Null means the cut predates the count. It is shown as "sin conteo" rather
+    // than as a zero difference, because "nobody checked" and "it balanced" are
+    // opposite pieces of news and must never look the same in a list.
+    const countCell = c.counted_cents === null || c.counted_cents === undefined
+      ? '<span class="muted">sin conteo</span>'
+      : `<strong>${money(c.counted_cents)}</strong>`
+
+    const diffCell = diff === null || diff === undefined
+      ? '<span class="muted">—</span>'
+      : diff === 0
+        ? '<span class="ok">cuadra</span>'
+        : `<span class="${diff < 0 ? 'short' : 'over'}">${diff < 0 ? '−' : '+'}${money(Math.abs(diff))}</span>`
 
     tr.innerHTML = `<td>${when(c.created_at)}</td><td class="hide-sm">${escapeHtml(c.store_id)}</td>
                     <td>${c.cashier ? escapeHtml(c.cashier) : '<span class="muted">sin nombre</span>'}</td>
                     <td class="num">${c.sale_count}</td>
                     <td class="num hide-sm">${money(c.total_cents)}</td>
                     <td class="num hide-sm">${card > 0 ? money(card) : '<span class="muted">—</span>'}</td>
-                    <td class="num"><strong>${money(cash)}</strong></td>`
+                    <td class="num hide-sm">${money(expected)}</td>
+                    <td class="num">${countCell}</td>
+                    <td class="num">${diffCell}</td>`
+    return tr
+  }))
+}
+
+async function loadMovements() {
+  const { movements, totals } = await api('/api/movements')
+
+  $('movs-totals').innerHTML = `
+    <div><span>ENTRADAS</span><strong>${money(totals.inCents)}</strong></div>
+    <div><span>SALIDAS</span><strong>${money(totals.outCents)}</strong></div>
+    <div><span>NETO</span><strong>${money(totals.inCents - totals.outCents)}</strong></div>`
+
+  $('movs-body').replaceChildren(...movements.map((m) => {
+    const tr = document.createElement('tr')
+    const out = m.kind === 'out'
+    tr.innerHTML = `<td>${when(m.created_at)}</td><td class="hide-sm">${escapeHtml(m.store_id)}</td>
+                    <td><span class="${out ? 'short' : 'ok'}">${out ? 'SALIDA' : 'ENTRADA'}</span></td>
+                    <td>${escapeHtml(m.reason)}</td>
+                    <td class="hide-sm">${m.person ? escapeHtml(m.person) : '<span class="muted">—</span>'}</td>
+                    <td class="num"><strong>${out ? '−' : '+'}${money(m.amount_cents)}</strong></td>`
     return tr
   }))
 }
@@ -802,11 +886,12 @@ $('purge-now').onclick = async () => {
 document.querySelectorAll('.tab').forEach((tab) => {
   tab.onclick = () => {
     document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t === tab)))
-    for (const view of ['products', 'sales', 'cortes', 'mant']) {
+    for (const view of ['products', 'sales', 'cortes', 'movs', 'mant']) {
       $(`view-${view}`).classList.toggle('hidden', view !== tab.dataset.view)
     }
     if (tab.dataset.view === 'sales') loadSales()
     if (tab.dataset.view === 'cortes') loadCortes()
+    if (tab.dataset.view === 'movs') loadMovements()
     if (tab.dataset.view === 'mant') loadMaintenance()
   }
 })

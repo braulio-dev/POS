@@ -1,6 +1,7 @@
 import type { PaymentMethod, TerminalDetails, TerminalStatus } from './lib/tender'
+import type { SaleUnit } from './lib/weight'
 
-export type { PaymentMethod, TerminalDetails, TerminalStatus }
+export type { PaymentMethod, TerminalDetails, TerminalStatus, SaleUnit }
 
 export interface Product {
   id: number
@@ -19,8 +20,18 @@ export interface Product {
 export interface CartLine {
   productId: number | null
   name: string
+  /** Per piece, or per kilo when `unit` is 'kg'. */
   unitPriceCents: number
+  /** Pieces (whole), or kilos (three decimals) when `unit` is 'kg'. */
   qty: number
+  /** How `qty` reads. Absent on lines rung up before granel existed: piezas. */
+  unit: SaleUnit
+  /**
+   * What the line actually costs, rounded to the centavo exactly once when it
+   * was added. Carried rather than recomputed so a receipt's lines can never
+   * fail to add up to the total printed beneath them — see lib/weight.ts.
+   */
+  lineTotalCents: number
 }
 
 export interface NewProductInput {
@@ -59,6 +70,12 @@ export interface Settings {
   corteThresholdCents: string
   /** At or below this many units a product is flagged as running out. */
   lowStockThreshold: string
+  /**
+   * The fondo: what the corte suggests leaving in the drawer for the next
+   * shift. Only a default — every cut can leave a different amount, and after
+   * the first one the fondo is whatever the previous cut actually left.
+   */
+  cashFloatCents: string
 
   /** '1' while the card terminal is offered on the payment screen. */
   terminalEnabled: string
@@ -77,6 +94,27 @@ export interface Settings {
   syncIntervalSec: string
 }
 
+/** A movement of cash that is not a sale: the tortilla delivery, a retiro. */
+export type MovementKind = 'in' | 'out'
+
+export interface CashMovement {
+  uuid: string
+  kind: MovementKind
+  /** Always positive. The direction lives in `kind`, never in the sign. */
+  amountCents: number
+  reason: string
+  /** Who moved it, as typed. Null on rows saved before the field existed. */
+  person: string | null
+  createdAt: string
+}
+
+export interface MovementInput {
+  kind: MovementKind
+  amountCents: number
+  reason: string
+  person?: string | null
+}
+
 /** Money taken since the last corte, split by where it physically went. */
 export interface CashDrawer {
   /** Everything sold in the period, cash and card together. */
@@ -92,6 +130,19 @@ export interface CashDrawer {
   thresholdCents: number
   /** Measured against cash only — card takings are not a drawer risk. */
   needsCorte: boolean
+
+  /** Cash left in the drawer by the last corte to start this period with. */
+  floatCents: number
+  /** Cash put in for reasons other than a sale, in the period. */
+  cashInCents: number
+  /** Cash taken out for reasons other than change: retiros, proveedores. */
+  cashOutCents: number
+  movementCount: number
+  /**
+   * What should physically be in the drawer right now:
+   * fondo + ventas en efectivo + entradas − salidas.
+   */
+  expectedCents: number
 }
 
 export interface Corte {
@@ -104,6 +155,23 @@ export interface Corte {
   saleCount: number
   /** Who was on the till, as typed at the corte. Null on cuts taken before the field existed. */
   cashier: string | null
+
+  /* --- the reconciliation. Null on cuts taken before it was asked for. --- */
+
+  /** Cash the period started with, left behind by the previous cut. */
+  floatStartCents: number
+  cashInCents: number
+  cashOutCents: number
+  /** fondo + efectivo de ventas + entradas − salidas. */
+  expectedCents: number
+  /** What the cashier physically counted. The only figure nobody can rebuild. */
+  countedCents: number | null
+  /** Left in the drawer as the next period's fondo. */
+  floatLeftCents: number
+  /** Counted − fondo dejado: what physically changes hands. */
+  deliveredCents: number
+  /** Counted − esperado. Negative is a faltante. */
+  differenceCents: number | null
 }
 
 export interface CorteRow {
@@ -115,6 +183,26 @@ export interface CorteRow {
   cashier: string | null
   opened_at: string
   created_at: string
+  float_start_cents: number | null
+  cash_in_cents: number | null
+  cash_out_cents: number | null
+  expected_cents: number | null
+  counted_cents: number | null
+  float_left_cents: number | null
+  difference_cents: number | null
+}
+
+/** A recorded sale, as the tickets screen lists it for reprinting. */
+export interface SaleRecord {
+  uuid: string
+  createdAt: string
+  totalCents: number
+  receivedCents: number
+  changeCents: number
+  paymentMethod: PaymentMethod
+  cashCents: number
+  cardCents: number
+  items: CartLine[]
 }
 
 /** What a driver reports back about a charge in flight. */
@@ -186,6 +274,8 @@ export interface PasswordResult {
 export interface ReceiptInput extends SaleInput {
   folio: string
   createdAt: string
+  /** Marks the slip as a copy, so a reprint cannot pass for a second sale. */
+  reprint?: boolean
 }
 
 export interface StockEntry {
@@ -219,8 +309,31 @@ export interface PosApi {
   }): Promise<{ ok: boolean; error?: string; note?: string }>
 
   getCashDrawer(): Promise<CashDrawer>
-  recordCorte(options?: { print?: boolean; cashier?: string | null }): Promise<{ corte: Corte; printed: PrintResult }>
+  recordCorte(options?: {
+    print?: boolean
+    cashier?: string | null
+    /** What was physically counted. Null when nobody counted. */
+    countedCents?: number | null
+    /** Left behind as the next period's fondo. */
+    floatLeftCents?: number
+  }): Promise<{ corte: Corte; printed: PrintResult }>
   listCortes(limit?: number): Promise<CorteRow[]>
+
+  /* --------------------------------------------------- cash in and out */
+
+  listMovements(): Promise<CashMovement[]>
+  recordMovement(input: MovementInput): Promise<CashMovement>
+
+  /* -------------------------------------------------------- reprinting */
+
+  /** Recent sales, newest first, with their line items. */
+  listRecentSales(limit?: number): Promise<SaleRecord[]>
+  /**
+   * Reprints a sale from the database. Takes only a uuid: the ticket is built
+   * in the main process from what was recorded, so a reprint can never show
+   * something the sale did not actually say.
+   */
+  reprintReceipt(uuid: string): Promise<PrintResult>
 
   getSettings(): Promise<Settings>
   setSetting(key: keyof Settings, value: string): Promise<Settings>

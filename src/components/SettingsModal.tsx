@@ -57,6 +57,7 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
   // partially typed URL on every keystroke would re-arm the sync worker dozens
   // of times, and "20." is not a number yet.
   const [thresholdDraft, setThresholdDraft] = useState('')
+  const [floatDraft, setFloatDraft] = useState('')
   const [cortes, setCortes] = useState<CorteRow[]>([])
   const [sync, setSync] = useState<SyncStatus | null>(null)
 
@@ -71,6 +72,7 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
     pos.getSettings().then((s) => {
       setSettings(s)
       setThresholdDraft(formatMoney(Number(s.corteThresholdCents) || 0).replace('$', ''))
+      setFloatDraft(formatMoney(Number(s.cashFloatCents) || 0).replace('$', ''))
     })
     // Enumerating printers takes a moment (it shells out), so the dropdown
     // fills in after the modal is already on screen rather than delaying it.
@@ -287,6 +289,30 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
               </label>
 
               <label className="field">
+                <span>FONDO DE CAJA</span>
+                <input
+                  className="text-input"
+                  inputMode="decimal"
+                  value={floatDraft}
+                  onChange={(e) => setFloatDraft(e.target.value)}
+                  onBlur={() => {
+                    const cents = parseAmount(floatDraft)
+                    if (cents === null || cents < 0) {
+                      setFloatDraft(formatMoney(Number(settings.cashFloatCents) || 0).replace('$', ''))
+                      return
+                    }
+                    update('cashFloatCents', String(cents))
+                    setFloatDraft(formatMoney(cents).replace('$', ''))
+                  }}
+                />
+                <span className="muted-note">
+                  Lo que se sugiere dejar en la caja para dar cambio en el turno
+                  siguiente. Cada corte puede dejar otra cantidad; después del
+                  primero, el fondo es lo que dejó el corte anterior.
+                </span>
+              </label>
+
+              <label className="field">
                 <span>AVISAR CUANDO QUEDEN</span>
                 <input
                   className="text-input"
@@ -311,6 +337,16 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
                         <span className="muted-note">
                           {c.sale_count} ventas
                           {c.card_cents > 0 && ` · ${formatMoney(c.card_cents)} tarjeta`}
+                          {/* Shown only when it did not balance. A cut that
+                              cuadra needs no comment; one that did not is the
+                              reason this list is worth reading at all. */}
+                          {typeof c.difference_cents === 'number' && c.difference_cents !== 0 && (
+                            <em className={c.difference_cents < 0 ? 'corte-short' : 'corte-over'}>
+                              {' · '}
+                              {c.difference_cents < 0 ? 'faltaron ' : 'sobraron '}
+                              {formatMoney(Math.abs(c.difference_cents))}
+                            </em>
+                          )}
                         </span>
                         {/* The cash figure — what was actually handed over. */}
                         <strong>{formatMoney(c.cash_cents)}</strong>

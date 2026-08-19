@@ -1,14 +1,39 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { formatMoney } from '../lib/money'
 import { methodLabel, terminalLabel, type Tender } from '../lib/tender'
+import { pos } from '../lib/api'
 
 interface Props {
   totalCents: number
   tender: Tender
+  /** The sale just recorded, so its ticket can be printed again from here. */
+  saleUuid: string
   onDismiss: () => void
 }
 
-export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
+export function ChangeScreen({ totalCents, tender, saleUuid, onDismiss }: Props) {
+  const [printing, setPrinting] = useState(false)
+  const [printNote, setPrintNote] = useState<string | null>(null)
+
+  /**
+   * Reprinting from the change screen.
+   *
+   * This is where a missing ticket is noticed — the printer was out of paper,
+   * or the customer decides at the last second that they want one — and it is
+   * the only moment when the cashier still knows exactly which sale it was
+   * without going looking. So the button lives here as well as on the tickets
+   * screen, and it prints from the database like every other reprint.
+   */
+  async function reprint(event: React.MouseEvent) {
+    // The whole screen dismisses on a click, which is what makes it fast to
+    // clear. A button inside it therefore has to stop the click reaching it, or
+    // the ticket prints into a screen that has already gone.
+    event.stopPropagation()
+    setPrinting(true)
+    const result = await pos.reprintReceipt(saleUuid)
+    setPrinting(false)
+    setPrintNote(result.ok ? 'Ticket impreso' : result.error ?? 'No se pudo imprimir')
+  }
   // Any key or click clears it — the cashier is counting bills, not hunting for
   // a close button. No auto-dismiss timer: it stays until they say they're done.
   useEffect(() => {
@@ -58,6 +83,15 @@ export function ChangeScreen({ totalCents, tender, onDismiss }: Props) {
           </div>
         )}
       </dl>
+
+      <button
+        className="btn-secondary change-reprint"
+        onClick={reprint}
+        disabled={printing}
+      >
+        {printing ? 'IMPRIMIENDO…' : 'IMPRIMIR TICKET'}
+      </button>
+      {printNote && <p className="change-print-note">{printNote}</p>}
 
       <p className="change-hint">Toca la pantalla para continuar</p>
     </div>

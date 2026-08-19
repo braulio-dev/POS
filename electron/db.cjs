@@ -63,6 +63,12 @@ function openDatabase(dataDir) {
 
     -- Line items snapshot the name and price. A receipt reprinted next year must
     -- show what the customer actually paid, not today's price.
+    --
+    -- The qty column is pieces for a normal product and kilos for one sold by
+    -- weight, so it is the one number here allowed to be fractional. SQLite
+    -- stores 1.35 as a REAL despite the INTEGER affinity below (affinity only
+    -- converts when the round trip is lossless), which is what lets granel
+    -- arrive without rebuilding a table full of a year of real sales.
     CREATE TABLE IF NOT EXISTS sale_items (
       id               INTEGER PRIMARY KEY,
       sale_id          INTEGER NOT NULL REFERENCES sales(id),
@@ -70,6 +76,25 @@ function openDatabase(dataDir) {
       name             TEXT    NOT NULL,
       unit_price_cents INTEGER NOT NULL,
       qty              INTEGER NOT NULL
+    );
+
+    -- Cash that moved for a reason other than a sale: the fondo going in, the
+    -- tortilla delivery being paid out of the drawer, a retiro to the back room.
+    --
+    -- Without this table the corte can only ever report what it expected, never
+    -- what actually happened, and every legitimate errand shows up at closing
+    -- time as an unexplained faltante — which is how a cashier learns that the
+    -- difference figure means nothing and stops reading it.
+    CREATE TABLE IF NOT EXISTS cash_movements (
+      id           INTEGER PRIMARY KEY,
+      uuid         TEXT    NOT NULL UNIQUE,
+      -- 'in' | 'out'. The amount is always positive; direction lives here, so
+      -- no query can accidentally sum a mix of signs into a meaningless total.
+      kind         TEXT    NOT NULL,
+      amount_cents INTEGER NOT NULL,
+      reason       TEXT    NOT NULL,
+      person       TEXT,
+      created_at   TEXT    NOT NULL
     );
 
     -- Transactional outbox: written in the same transaction as the sale, drained
@@ -116,10 +141,12 @@ function openDatabase(dataDir) {
     CREATE INDEX IF NOT EXISTS idx_outbox_unsent ON outbox(sent_at) WHERE sent_at IS NULL;
     CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at);
     CREATE INDEX IF NOT EXISTS idx_cortes_created ON cortes(created_at);
+    CREATE INDEX IF NOT EXISTS idx_movements_created ON cash_movements(created_at);
   `)
 
   migrateProducts()
   migrateSales()
+  migrateSaleItems()
   // Tills that predate the manual corte have cortes rows with no cashier at
   // all; the column is nullable so those stay readable instead of inventing a
   // name nobody typed.
@@ -215,11 +242,53 @@ function migrateSales() {
 }
 
 /**
+ * Line items gained a unit and their own money once goods could be sold loose.
+ *
+ *   unit              'pza' or 'kg'. Everything sold before granel existed was
+ *                     sold by the piece — that was the only thing the register
+ *                     could ring up — so defaulting the column is exact rather
+ *                     than a guess.
+ *   line_total_cents  what the line actually cost. For pieces it is just
+ *                     price × qty, which is why the backfill below is safe; for
+ *                     a weight it is that product rounded to the centavo, and
+ *                     rounding it once and keeping it is what stops a reprinted
+ *                     ticket disagreeing with the total underneath it.
+ */
+function migrateSaleItems() {
+  addColumnIfMissing('sale_items', 'unit', "TEXT NOT NULL DEFAULT 'pza'")
+  addColumnIfMissing('sale_items', 'line_total_cents', 'INTEGER')
+  db.exec(
+    `UPDATE sale_items SET line_total_cents = unit_price_cents * qty
+      WHERE line_total_cents IS NULL`
+  )
+}
+
+/**
  * Cortes gained the same split, for the same reason.
  *
  * `total_cents` keeps meaning "everything sold in the period" so old rows and
  * old reports still read correctly. `cash_cents` is the new number that matters
  * at the counter: it is what the cashier physically counts out and hands over.
+ *
+ * Then they gained the reconciliation, which is the difference between a cut
+ * that reports and a cut that checks:
+ *
+ *   float_start_cents  what the drawer began the period with — the fondo the
+ *                      previous cut deliberately left behind.
+ *   cash_in/out_cents  the movements in `cash_movements` for the period,
+ *                      totalled onto the cut itself. Denormalised on purpose:
+ *                      a slip reprinted next year must show the same numbers it
+ *                      showed on the day, and range queries over a table that
+ *                      keeps growing are not a stable answer.
+ *   expected_cents     fondo + efectivo de ventas + entradas − salidas.
+ *   counted_cents      what the cashier physically counted. The one figure in
+ *                      this table that cannot be reconstructed from anything
+ *                      else — if it is not captured at the counter it is gone.
+ *   float_left_cents   left in the drawer to start the next period.
+ *   difference_cents   counted − expected. Negative is a faltante.
+ *
+ * All nullable: cuts taken before anyone was asked to count stay readable
+ * instead of claiming a count of zero that nobody ever made.
  */
 function migrateCortes() {
   addColumnIfMissing('cortes', 'cash_cents', 'INTEGER')
@@ -228,6 +297,20 @@ function migrateCortes() {
   // Cuts taken before the terminal existed were all cash, so their total is
   // their cash — the same reasoning as the sales backfill above.
   db.exec('UPDATE cortes SET cash_cents = total_cents WHERE cash_cents IS NULL')
+
+  addColumnIfMissing('cortes', 'float_start_cents', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('cortes', 'cash_in_cents', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('cortes', 'cash_out_cents', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('cortes', 'expected_cents', 'INTEGER')
+  addColumnIfMissing('cortes', 'counted_cents', 'INTEGER')
+  addColumnIfMissing('cortes', 'float_left_cents', 'INTEGER NOT NULL DEFAULT 0')
+  addColumnIfMissing('cortes', 'difference_cents', 'INTEGER')
+
+  // An old cut had no fondo and no movements, so what it expected was exactly
+  // the cash it reported. Filling that in makes the whole history readable by
+  // the same query as today's cuts, with `counted_cents` still NULL to say
+  // truthfully that nobody was asked to count.
+  db.exec('UPDATE cortes SET expected_cents = cash_cents WHERE expected_cents IS NULL')
 }
 
 function seedDefaults() {
@@ -241,6 +324,11 @@ function seedDefaults() {
   // "getting low" mark of 3 units. Both are editable in Configuracion.
   seed.run('corteThresholdCents', '200000')
   seed.run('lowStockThreshold', '3')
+
+  // The fondo: what stays in the drawer after a cut so the next shift can give
+  // change. Zero by default because inventing money the owner never put there
+  // would make the very first reconciliation wrong in the store's favour.
+  seed.run('cashFloatCents', '0')
 
   // Card terminal. Defaults to 'manual': the cashier charges on the terminal's
   // own keypad and types the authorisation number back here. That needs no
@@ -509,6 +597,38 @@ function normalisePayment({
 }
 
 /**
+ * Settles one cart line before it is written.
+ *
+ * Same principle as the payment split above: the renderer computes all of this
+ * while the cashier is at the counter, and this is the last gate before it
+ * becomes permanent. A line rung up by an older caller carries no unit and no
+ * total of its own — those were piezas at price × qty, which is what the
+ * fallbacks reproduce exactly.
+ *
+ * Only a `kg` line may be fractional. Rounding a piece count would let a stray
+ * decimal decrement stock by 2.5 units and leave a shelf that can never be
+ * recounted back to a whole number.
+ */
+function normaliseItem(it) {
+  const unit = it.unit === 'kg' ? 'kg' : 'pza'
+  const raw = Number(it.qty) || 0
+  const qty = unit === 'kg' ? Math.round(raw * 1000) / 1000 : Math.trunc(raw)
+  const unitPriceCents = Math.trunc(Number(it.unitPriceCents) || 0)
+  const lineTotalCents = it.lineTotalCents === undefined || it.lineTotalCents === null
+    ? Math.round(unitPriceCents * qty)
+    : Math.trunc(Number(it.lineTotalCents) || 0)
+
+  return {
+    productId: it.productId ?? null,
+    name: String(it.name),
+    unitPriceCents,
+    qty,
+    unit,
+    lineTotalCents,
+  }
+}
+
+/**
  * Records a completed sale. Sale, line items, stock decrements and outbox rows
  * all commit together, so the register can never end up with a sale that never
  * gets synced, or stock that drifts from the sales that caused it.
@@ -519,8 +639,19 @@ function recordSale({
 }) {
   const uuid = crypto.randomUUID()
   const createdAt = now()
+  const lines = (items || []).map(normaliseItem)
+
+  // The total is re-derived from the lines rather than taken from the caller,
+  // for the same reason the payment method is re-derived from its split: a sale
+  // whose printed lines do not add up to its own total is unauditable, and once
+  // a weight is involved the two are only equal if both sides round identically.
+  // A caller with no lines at all (a repair script) keeps what it passed.
+  const total = lines.length > 0
+    ? lines.reduce((sum, l) => sum + l.lineTotalCents, 0)
+    : Math.trunc(Number(totalCents) || 0)
+
   const payment = normalisePayment({
-    totalCents, receivedCents, changeCents, cashCents, cardCents, paymentMethod, terminal,
+    totalCents: total, receivedCents, changeCents, cashCents, cardCents, paymentMethod, terminal,
   })
 
   db.exec('BEGIN')
@@ -532,7 +663,7 @@ function recordSale({
                           created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      uuid, totalCents, payment.receivedCents, payment.changeCents,
+      uuid, total, payment.receivedCents, payment.changeCents,
       payment.method, payment.cashCents, payment.cardCents,
       payment.terminalProvider, payment.terminalReference,
       payment.cardBrand, payment.cardLast4,
@@ -541,21 +672,27 @@ function recordSale({
     const saleId = info.lastInsertRowid
 
     const insertItem = db.prepare(
-      `INSERT INTO sale_items (sale_id, product_id, name, unit_price_cents, qty)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO sale_items (sale_id, product_id, name, unit_price_cents, qty,
+                               unit, line_total_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
     const decrement = db.prepare(
       'UPDATE products SET stock = stock - ?, stock_updated_at = ? WHERE id = ?'
     )
 
-    for (const it of items) {
-      insertItem.run(saleId, it.productId ?? null, it.name, it.unitPriceCents, it.qty)
+    for (const it of lines) {
+      insertItem.run(
+        saleId, it.productId, it.name, it.unitPriceCents, it.qty,
+        it.unit, it.lineTotalCents
+      )
 
       // A cart line can point at a product that was since deleted, or be a
       // manual entry with no product at all; those have no stock to move.
       // Untracked products (sold by weight) have no unit count to move, so
-      // they are left alone rather than driven meaninglessly negative.
-      if (it.productId != null) {
+      // they are left alone rather than driven meaninglessly negative — the
+      // unit check says the same thing from the line's side, and both have to
+      // hold before a count moves.
+      if (it.productId != null && it.unit === 'pza') {
         const before = getProduct(it.productId)
         if (before && before.track_stock) {
           decrement.run(it.qty, createdAt, it.productId)
@@ -566,7 +703,7 @@ function recordSale({
     }
 
     enqueue('sale', uuid, {
-      uuid, createdAt, totalCents,
+      uuid, createdAt, totalCents: total,
       receivedCents: payment.receivedCents,
       changeCents: payment.changeCents,
       paymentMethod: payment.method,
@@ -576,15 +713,159 @@ function recordSale({
       terminalReference: payment.terminalReference,
       cardBrand: payment.cardBrand,
       cardLast4: payment.cardLast4,
-      items,
+      items: lines,
     }, createdAt)
 
     db.exec('COMMIT')
-    return { id: Number(saleId), uuid, createdAt, ...payment }
+    return { id: Number(saleId), uuid, createdAt, totalCents: total, ...payment }
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
   }
+}
+
+/* ------------------------------------------------- reading sales back out */
+
+/** One stored line item, in the shape the renderer and the receipt both use. */
+function itemPayload(row) {
+  return {
+    productId: row.product_id,
+    name: row.name,
+    unitPriceCents: row.unit_price_cents,
+    qty: row.qty,
+    unit: row.unit || 'pza',
+    lineTotalCents: row.line_total_cents ?? row.unit_price_cents * row.qty,
+  }
+}
+
+const SALE_COLUMNS = `id, uuid, total_cents, received_cents, change_cents, payment_method,
+                      cash_cents, card_cents, terminal_provider, terminal_reference,
+                      card_brand, card_last4, created_at`
+
+function saleWithItems(sale) {
+  const items = db.prepare(
+    `SELECT product_id, name, unit_price_cents, qty, unit, line_total_cents
+       FROM sale_items WHERE sale_id = ? ORDER BY id`
+  ).all(sale.id).map(itemPayload)
+
+  return {
+    uuid: sale.uuid,
+    createdAt: sale.created_at,
+    totalCents: sale.total_cents,
+    receivedCents: sale.received_cents,
+    changeCents: sale.change_cents,
+    paymentMethod: sale.payment_method,
+    cashCents: sale.cash_cents ?? sale.total_cents - (sale.card_cents || 0),
+    cardCents: sale.card_cents || 0,
+    terminal: sale.terminal_provider
+      ? {
+          provider: sale.terminal_provider,
+          reference: sale.terminal_reference,
+          cardBrand: sale.card_brand,
+          cardLast4: sale.card_last4,
+          status: 'approved',
+        }
+      : null,
+    items,
+  }
+}
+
+/**
+ * The last few sales, newest first, for the reprint screen.
+ *
+ * Capped rather than searchable on purpose: a ticket gets reprinted because the
+ * printer jammed a minute ago or the customer came back from the door, and both
+ * of those are within the last handful of sales. A full history browser at the
+ * counter is a different screen, with a different reason to exist.
+ */
+function listRecentSales(limit = 30) {
+  return db.prepare(
+    `SELECT ${SALE_COLUMNS} FROM sales ORDER BY created_at DESC LIMIT ?`
+  ).all(Math.min(Math.max(1, Math.trunc(Number(limit) || 30)), 200)).map(saleWithItems)
+}
+
+/**
+ * One sale, in the exact shape the printer wants.
+ *
+ * The reprint path takes a uuid and reads the rest from here rather than
+ * accepting a ticket body from the renderer: a slip printed from the database
+ * cannot show a price, a total or a payment method the sale never had.
+ */
+function getSaleReceipt(uuid) {
+  const sale = db.prepare(`SELECT ${SALE_COLUMNS} FROM sales WHERE uuid = ?`).get(uuid)
+  if (!sale) return null
+  return { ...saleWithItems(sale), folio: sale.uuid, reprint: true }
+}
+
+/* ------------------------------------------------------- cash movements */
+
+const MOVEMENT_COLUMNS = 'uuid, kind, amount_cents, reason, person, created_at'
+
+function movementPayload(row) {
+  return {
+    uuid: row.uuid,
+    kind: row.kind,
+    amountCents: row.amount_cents,
+    reason: row.reason,
+    person: row.person ?? null,
+    createdAt: row.created_at,
+  }
+}
+
+/**
+ * Records cash moving in or out of the drawer for a reason that is not a sale.
+ *
+ * Deliberately not behind the owner's password. A salida is the cashier paying
+ * the tortilla delivery out of the till, which happens whether or not the owner
+ * is in the shop; locking it would not stop the money leaving, it would only
+ * stop the record of it being made — and an unrecorded salida is exactly the
+ * faltante the corte is meant to explain. What it does insist on is a reason,
+ * because "$200 salieron" a week later is not an answer to anything.
+ */
+function recordMovement({ kind, amountCents, reason, person = null }) {
+  const direction = kind === 'out' ? 'out' : 'in'
+  const amount = Math.abs(Math.trunc(Number(amountCents) || 0))
+  const why = String(reason ?? '').trim().slice(0, 80)
+  if (amount <= 0) throw new Error('El monto debe ser mayor que cero')
+  if (!why) throw new Error('Falta el motivo del movimiento')
+
+  const uuid = crypto.randomUUID()
+  const createdAt = now()
+  const who = String(person ?? '').trim().slice(0, 60) || null
+
+  db.exec('BEGIN')
+  try {
+    db.prepare(
+      `INSERT INTO cash_movements (uuid, kind, amount_cents, reason, person, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(uuid, direction, amount, why, who, createdAt)
+
+    const row = { uuid, kind: direction, amount_cents: amount, reason: why, person: who, created_at: createdAt }
+    enqueue('movement', uuid, movementPayload(row), createdAt)
+    db.exec('COMMIT')
+    return movementPayload(row)
+  } catch (err) {
+    db.exec('ROLLBACK')
+    throw err
+  }
+}
+
+/** Movements in the open period, newest first. */
+function listMovements() {
+  return db.prepare(
+    `SELECT ${MOVEMENT_COLUMNS} FROM cash_movements
+      WHERE created_at > ? ORDER BY created_at DESC`
+  ).all(currentPeriodStart()).map(movementPayload)
+}
+
+function movementTotals(openedAt) {
+  const row = db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN kind = 'in'  THEN amount_cents END), 0) AS inCents,
+            COALESCE(SUM(CASE WHEN kind = 'out' THEN amount_cents END), 0) AS outCents,
+            COUNT(*) AS n
+       FROM cash_movements WHERE created_at > ?`
+  ).get(openedAt)
+  return { inCents: Number(row.inCents), outCents: Number(row.outCents), count: Number(row.n) }
 }
 
 /**
@@ -602,7 +883,7 @@ function recordSale({
  */
 function enqueueFullSnapshot({ includeHistory = true } = {}) {
   const at = now()
-  const counts = { products: 0, stock: 0, sales: 0, cortes: 0 }
+  const counts = { products: 0, stock: 0, sales: 0, cortes: 0, movements: 0 }
 
   db.exec('BEGIN')
   try {
@@ -629,15 +910,11 @@ function enqueueFullSnapshot({ includeHistory = true } = {}) {
       // would be thousands of round trips on a till with a year of history.
       const itemsBySale = new Map()
       for (const it of db.prepare(
-        'SELECT sale_id, product_id, name, unit_price_cents, qty FROM sale_items'
+        `SELECT sale_id, product_id, name, unit_price_cents, qty, unit, line_total_cents
+           FROM sale_items`
       ).all()) {
         if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, [])
-        itemsBySale.get(it.sale_id).push({
-          productId: it.product_id,
-          name: it.name,
-          unitPriceCents: it.unit_price_cents,
-          qty: it.qty,
-        })
+        itemsBySale.get(it.sale_id).push(itemPayload(it))
       }
 
       for (const sale of db.prepare(
@@ -664,22 +941,14 @@ function enqueueFullSnapshot({ includeHistory = true } = {}) {
         counts.sales++
       }
 
-      for (const c of db.prepare(
-        `SELECT uuid, total_cents, cash_cents, card_cents, sale_count, cashier,
-                opened_at, created_at
-           FROM cortes`
-      ).all()) {
-        enqueue('corte', c.uuid, {
-          uuid: c.uuid,
-          totalCents: c.total_cents,
-          cashCents: c.cash_cents,
-          cardCents: c.card_cents,
-          saleCount: c.sale_count,
-          cashier: c.cashier ?? null,
-          openedAt: c.opened_at,
-          createdAt: c.created_at,
-        }, c.created_at)
+      for (const c of db.prepare(`SELECT ${CORTE_COLUMNS} FROM cortes`).all()) {
+        enqueue('corte', c.uuid, cortePayload(c), c.created_at)
         counts.cortes++
+      }
+
+      for (const m of db.prepare(`SELECT ${MOVEMENT_COLUMNS} FROM cash_movements`).all()) {
+        enqueue('movement', m.uuid, movementPayload(m), m.created_at)
+        counts.movements++
       }
     }
 
@@ -727,6 +996,9 @@ function getCashDrawer() {
   const thresholdCents = Number(raw ? raw.value : 0) || 0
   const cashCents = Number(row.cashCents)
 
+  const moves = movementTotals(openedAt)
+  const floatCents = openingFloat()
+
   return {
     totalCents: Number(row.totalCents),
     cashCents,
@@ -735,11 +1007,65 @@ function getCashDrawer() {
     cardSaleCount: Number(row.cardSaleCount),
     openedAt,
     thresholdCents,
+
+    floatCents,
+    cashInCents: moves.inCents,
+    cashOutCents: moves.outCents,
+    movementCount: moves.count,
+    // Everything the drawer should be holding, which is a different question
+    // from how much was sold: the fondo was never sold, the retiro already
+    // left, and the tortilla delivery was paid out of the same bills.
+    expectedCents: floatCents + cashCents + moves.inCents - moves.outCents,
     // Measured against cash only. The reminder exists because a drawer full of
     // bills is a theft risk worth walking to the back for; card takings sitting
     // in a Clip account are not, and letting them trip the alarm would train
     // the cashier to ignore it.
     needsCorte: thresholdCents > 0 && cashCents >= thresholdCents,
+  }
+}
+
+/**
+ * What the drawer started this period with.
+ *
+ * The previous cut decided it: whatever it deliberately left behind is what the
+ * next shift found in the morning. Chaining the periods this way means the
+ * fondo can never be double counted, and a shift that leaves nothing behind is
+ * as valid as one that leaves five hundred pesos.
+ *
+ * Only the very first cut on a fresh register has no predecessor, and that one
+ * falls back to the amount configured in Configuración → Corte.
+ */
+function openingFloat() {
+  const last = db.prepare(
+    'SELECT float_left_cents FROM cortes ORDER BY created_at DESC LIMIT 1'
+  ).get()
+  if (last) return Number(last.float_left_cents) || 0
+  const raw = db.prepare('SELECT value FROM settings WHERE key = ?').get('cashFloatCents')
+  return Number(raw ? raw.value : 0) || 0
+}
+
+const CORTE_COLUMNS = `uuid, total_cents, cash_cents, card_cents, sale_count, cashier,
+                       opened_at, created_at, float_start_cents, cash_in_cents,
+                       cash_out_cents, expected_cents, counted_cents, float_left_cents,
+                       difference_cents`
+
+function cortePayload(row) {
+  return {
+    uuid: row.uuid,
+    totalCents: row.total_cents,
+    cashCents: row.cash_cents,
+    cardCents: row.card_cents,
+    saleCount: row.sale_count,
+    cashier: row.cashier ?? null,
+    openedAt: row.opened_at,
+    createdAt: row.created_at,
+    floatStartCents: row.float_start_cents ?? 0,
+    cashInCents: row.cash_in_cents ?? 0,
+    cashOutCents: row.cash_out_cents ?? 0,
+    expectedCents: row.expected_cents ?? row.cash_cents,
+    countedCents: row.counted_cents ?? null,
+    floatLeftCents: row.float_left_cents ?? 0,
+    differenceCents: row.difference_cents ?? null,
   }
 }
 
@@ -750,58 +1076,75 @@ function getCashDrawer() {
  * pushed to the server so the owner can tell, months later, who closed which
  * drawer. A blank name is kept as NULL rather than an empty string: "nobody
  * typed one" and "someone typed nothing" should not look different upstream.
+ *
+ * `countedCents` is what was physically in the drawer. Everything else on a
+ * corte can be rebuilt from the sales table years later; this one exists for a
+ * few seconds on a counter and then is gone forever, which is the entire reason
+ * the cut asks for it. It is compared against what the register expected, and
+ * the gap is stored as a fact rather than resolved:
+ *
+ *   - a difference does NOT block the cut. The money is already however much it
+ *     is; refusing to close would leave the drawer open, the period unclosed and
+ *     the discrepancy unrecorded, which is strictly worse than writing it down.
+ *   - it is never quietly absorbed into the numbers either. `expected_cents`
+ *     keeps saying what the books think and `counted_cents` what the room says,
+ *     so the disagreement survives to be looked at.
+ *
+ * `floatLeftCents` is the fondo left behind for the next shift. What physically
+ * changes hands — the figure on the "Entrega / Recibe" lines of the slip — is
+ * therefore counted minus fondo, not the period's takings.
  */
-function recordCorte({ cashier = null } = {}) {
+function recordCorte({ cashier = null, countedCents = null, floatLeftCents = 0 } = {}) {
   const drawer = getCashDrawer()
   const uuid = crypto.randomUUID()
   const createdAt = now()
   const who = String(cashier ?? '').trim().slice(0, 60) || null
 
+  const counted = countedCents === null || countedCents === undefined || countedCents === ''
+    ? null
+    : Math.max(0, Math.trunc(Number(countedCents) || 0))
+
+  // You cannot leave behind money that is not in the drawer. Clamping against
+  // what was actually counted (and against the expectation when nobody
+  // counted) keeps the delivered figure from going negative, which would print
+  // a slip asking the owner to hand money *to* the till.
+  const inDrawer = counted === null ? drawer.expectedCents : counted
+  const floatLeft = Math.min(
+    Math.max(0, Math.trunc(Number(floatLeftCents) || 0)),
+    Math.max(0, inDrawer)
+  )
+  const delivered = Math.max(0, inDrawer - floatLeft)
+  const difference = counted === null ? null : counted - drawer.expectedCents
+
   db.exec('BEGIN')
   try {
     db.prepare(
       `INSERT INTO cortes (uuid, total_cents, cash_cents, card_cents, sale_count,
-                           cashier, opened_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+                           cashier, opened_at, created_at, float_start_cents,
+                           cash_in_cents, cash_out_cents, expected_cents,
+                           counted_cents, float_left_cents, difference_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       uuid, drawer.totalCents, drawer.cashCents, drawer.cardCents,
-      drawer.saleCount, who, drawer.openedAt, createdAt
+      drawer.saleCount, who, drawer.openedAt, createdAt,
+      drawer.floatCents, drawer.cashInCents, drawer.cashOutCents,
+      drawer.expectedCents, counted, floatLeft, difference
     )
 
-    enqueue('corte', uuid, {
-      uuid,
-      totalCents: drawer.totalCents,
-      cashCents: drawer.cashCents,
-      cardCents: drawer.cardCents,
-      saleCount: drawer.saleCount,
-      cashier: who,
-      openedAt: drawer.openedAt,
-      createdAt,
-    }, createdAt)
+    const row = db.prepare(`SELECT ${CORTE_COLUMNS} FROM cortes WHERE uuid = ?`).get(uuid)
+    enqueue('corte', uuid, cortePayload(row), createdAt)
 
     db.exec('COMMIT')
+    return { ...cortePayload(row), deliveredCents: delivered }
   } catch (err) {
     db.exec('ROLLBACK')
     throw err
-  }
-
-  return {
-    uuid,
-    createdAt,
-    totalCents: drawer.totalCents,
-    cashCents: drawer.cashCents,
-    cardCents: drawer.cardCents,
-    saleCount: drawer.saleCount,
-    cashier: who,
-    openedAt: drawer.openedAt,
   }
 }
 
 function listCortes(limit = 20) {
   return db.prepare(
-    `SELECT uuid, total_cents, cash_cents, card_cents, sale_count, cashier,
-            opened_at, created_at
-       FROM cortes ORDER BY created_at DESC LIMIT ?`
+    `SELECT ${CORTE_COLUMNS} FROM cortes ORDER BY created_at DESC LIMIT ?`
   ).all(limit)
 }
 
@@ -1010,10 +1353,14 @@ module.exports = {
   setTrackStock,
   setStockBulk,
   recordSale,
+  listRecentSales,
+  getSaleReceipt,
   enqueueFullSnapshot,
   getCashDrawer,
   recordCorte,
   listCortes,
+  recordMovement,
+  listMovements,
   getSyncState,
   setSyncState,
   pendingOutbox,

@@ -28,6 +28,20 @@ protocol.registerSchemesAsPrivileged([
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// Header buttons are picked by their label rather than their position. They
+// used to be indexed, which broke silently the first time a button was added
+// to the left of Inventario: the harness kept passing while clicking the wrong
+// thing, which is the one failure mode a screenshot test cannot show you.
+const HEADER = `((label) => [...document.querySelectorAll('.icon-btn')]
+  .find((b) => b.getAttribute('aria-label') === label))`
+
+/** Types into a React-controlled input the way the real keyboard would. */
+const TYPE = `((el, value) => {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  setter.call(el, value);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+})`
+
 async function shoot(win, name) {
   const img = await win.capturePage()
   fs.writeFileSync(path.join(OUT, `${name}.png`), img.toPNG())
@@ -140,7 +154,7 @@ app.whenReady().then(async () => {
   await wait(300)
 
   // 2b. Configuración now sits behind the password gate.
-  await win.webContents.executeJavaScript(`document.querySelector('.icon-btn').click()`)
+  await win.webContents.executeJavaScript(`${HEADER}('Configuración').click()`)
   await wait(500)
   await shoot(win, '6a-password')
 
@@ -175,7 +189,7 @@ app.whenReady().then(async () => {
   await wait(300)
 
   // 2c. Inventory, behind the same gate.
-  await win.webContents.executeJavaScript(`document.querySelectorAll('.icon-btn')[1].click()`)
+  await win.webContents.executeJavaScript(`${HEADER}('Inventario').click()`)
   await wait(400)
   await win.webContents.executeJavaScript(`
     (() => {
@@ -203,7 +217,7 @@ app.whenReady().then(async () => {
 
   // 2. Add-product modal — now reached from inside Inventario, which is behind
   //    the password, rather than from a button on the sale screen.
-  await win.webContents.executeJavaScript(`document.querySelectorAll('.icon-btn')[1].click()`)
+  await win.webContents.executeJavaScript(`${HEADER}('Inventario').click()`)
   await wait(400)
   await win.webContents.executeJavaScript(`
     (() => {
@@ -289,7 +303,39 @@ app.whenReady().then(async () => {
 
   await win.webContents.executeJavaScript(`document.querySelector('.corte-banner .btn-corte').click()`)
   await wait(500)
+
+  // The cut now asks who is handing the drawer over and what they counted, so
+  // the harness fills both in. The counted figure is deliberately a few pesos
+  // short of what the register expects, which is what puts the "faltan" verdict
+  // into the screenshot — a cut that always balances never shows its own alarm.
+  const expected = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = [...document.querySelectorAll('.corte-summary > div')];
+      const row = rows.find((r) => r.textContent.includes('DEBE HABER'));
+      return row ? row.querySelector('dd').textContent : null;
+    })()
+  `)
+  console.log('CORTE expected in drawer:', expected)
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const type = ${TYPE};
+      const fields = [...document.querySelectorAll('.product-modal input')];
+      type(document.querySelector('.corte-field input'), 'Lupe');
+      const counted = fields.find((f) => f.placeholder === '0.00');
+      type(counted, '95');
+    })()
+  `)
+  await wait(400)
   await shoot(win, '9-corte-modal')
+
+  const verdict = await win.webContents.executeJavaScript(`
+    (() => {
+      const v = document.querySelector('.corte-verdict');
+      return v ? v.textContent : null;
+    })()
+  `)
+  console.log(verdict ? `CORTE PASS: verdict shown — ${JSON.stringify(verdict)}` : 'CORTE FAIL: no verdict')
 
   // Confirming must zero the drawer and take the banner away.
   await win.webContents.executeJavaScript(`
@@ -301,6 +347,101 @@ app.whenReady().then(async () => {
   )
   console.log(cleared ? 'CORTE PASS: banner cleared after the cut' : 'CORTE FAIL: banner still up')
   await shoot(win, '10-after-corte')
+
+  // --- Granel: a product with no Inventario is priced by the kilo ---------
+  await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.product-card')].find((c) => c.textContent.includes('Frijol')).click()
+  `)
+  await wait(500)
+  const weighOpen = await win.webContents.executeJavaScript(
+    `Boolean(document.querySelector('.weight-modal'))`
+  )
+  console.log(weighOpen
+    ? 'GRANEL PASS: an untracked product opens the scale screen instead of adding one piece'
+    : 'GRANEL FAIL: no weight screen')
+
+  await win.webContents.executeJavaScript(
+    `${TYPE}(document.querySelector('.weight-input'), '1.35')`
+  )
+  await wait(400)
+  await shoot(win, '11-weight')
+
+  const priced = await win.webContents.executeJavaScript(
+    `document.querySelector('.weight-result-total').textContent`
+  )
+  // 1.350 kg of a $39.00 kilo is $52.65, rounded once, here.
+  console.log(priced === '$52.65'
+    ? `GRANEL PASS: 1.350 kg priced at ${priced}`
+    : `GRANEL FAIL: priced at ${priced}`)
+
+  await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.weight-modal button')].find((b) => b.textContent.includes('AGREGAR')).click()
+  `)
+  await wait(500)
+  const weighedLine = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = [...document.querySelectorAll('.cart-row')].find((r) => r.textContent.includes('Frijol'));
+      return row ? row.textContent : null;
+    })()
+  `)
+  console.log(weighedLine && weighedLine.includes('1.350 kg')
+    ? `GRANEL PASS: cart line reads ${JSON.stringify(weighedLine)}`
+    : `GRANEL FAIL: cart line ${JSON.stringify(weighedLine)}`)
+
+  // --- Cash in and out ----------------------------------------------------
+  await win.webContents.executeJavaScript(`${HEADER}('Entradas y salidas').click()`)
+  await wait(500)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const type = ${TYPE};
+      const inputs = [...document.querySelectorAll('.cash-modal input')];
+      type(inputs.find((i) => i.placeholder === '0.00'), '180');
+      type(inputs.find((i) => i.maxLength === 80), 'Pago de tortillas');
+    })()
+  `)
+  await wait(300)
+  await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.cash-modal button')].find((b) => b.textContent.includes('REGISTRAR SALIDA')).click()
+  `)
+  await wait(700)
+  await shoot(win, '12-cash-movements')
+
+  const movement = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = document.querySelector('.movement-row');
+      return row ? row.textContent : null;
+    })()
+  `)
+  console.log(movement && movement.includes('180')
+    ? `CAJA PASS: salida recorded — ${JSON.stringify(movement)}`
+    : `CAJA FAIL: ${JSON.stringify(movement)}`)
+
+  // The drawer must now expect 180 pesos less than the sales alone would say.
+  const expectedAfter = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = [...document.querySelectorAll('.cash-modal .corte-summary > div')];
+      const row = rows.find((r) => r.textContent.includes('DEBE HABER'));
+      return row ? row.querySelector('dd').textContent : null;
+    })()
+  `)
+  console.log('CAJA expected after salida:', expectedAfter)
+
+  await win.webContents.executeJavaScript(`
+    [...document.querySelectorAll('.cash-modal button')].find((b) => b.textContent.includes('Cerrar')).click()
+  `)
+  await wait(400)
+
+  // --- Reprinting a ticket ------------------------------------------------
+  await win.webContents.executeJavaScript(`${HEADER}('Tickets').click()`)
+  await wait(600)
+  await shoot(win, '13-tickets')
+
+  const tickets = await win.webContents.executeJavaScript(
+    `document.querySelectorAll('.ticket-card').length`
+  )
+  console.log(tickets > 0
+    ? `TICKETS PASS: ${tickets} venta(s) disponible(s) para reimprimir`
+    : 'TICKETS FAIL: no sales listed')
 
   app.exit(0)
 })
