@@ -26,9 +26,16 @@ asarUnpack:
   - scripts/raw-print.ps1
 
 win:
+  # Both arches, because the shop counter is whatever PC the store already owns.
+  # At least one register runs 32-bit Windows 10 22H2, and an x64-only installer
+  # simply will not start there. Listing both makes electron-builder emit ONE
+  # installer carrying both binaries, which picks the right one at install time
+  # -- the technician carries a single file and never has to check the machine.
+  # Nothing here is arch-sensitive to build: there are no native modules, since
+  # the database is Node's built-in node:sqlite (see electron/db.cjs).
   target:
     - target: nsis
-      arch: [x64]
+      arch: [x64, ia32]
   icon: build/icon.png
   # There is no code-signing certificate, so Windows SmartScreen warns on the
   # first run. README.md tells the installer what to click.
