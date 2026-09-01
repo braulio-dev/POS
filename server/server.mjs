@@ -249,12 +249,24 @@ function logChange(entity, uuid, payload, origin) {
  * Last-write-wins per entity, exactly mirroring the register's own rule in
  * electron/db.cjs. Product metadata and stock carry separate timestamps so a
  * price edit made here cannot roll back stock the register decremented later.
+ *
+ * `resend` marks a push the register made deliberately to repopulate the feed,
+ * not one it made because something changed. Without it, "Reenviar todo" is a
+ * no-op against a server that already holds the data: every payload carries the
+ * timestamp it was first written with, loses the comparison below, and returns
+ * before ever reaching logChange. The register is told the push succeeded, the
+ * feed gains nothing, and a second register that has already read past those
+ * rows can never be handed them. On a resend we skip the write — the stored row
+ * really is current — but still log, so the state reappears at a fresh seq.
  */
-function applyProduct(payload, origin) {
+function applyProduct(payload, origin, resend = false) {
   const incomingAt = payload.updatedAt || now()
   const existing = db.prepare('SELECT updated_at FROM products WHERE uuid = ?').get(payload.uuid)
 
-  if (existing && existing.updated_at >= incomingAt) return false
+  if (existing && existing.updated_at >= incomingAt) {
+    if (resend) logChange('product', payload.uuid, payload, origin)
+    return false
+  }
 
   if (existing) {
     db.prepare(
@@ -287,11 +299,16 @@ function applyProduct(payload, origin) {
   return true
 }
 
-function applyStock(payload, origin) {
+function applyStock(payload, origin, resend = false) {
   const incomingAt = payload.updatedAt || now()
   const existing = db.prepare('SELECT stock_updated_at FROM products WHERE uuid = ?').get(payload.uuid)
+  // A product we have never heard of has nowhere to put a quantity. Logging it
+  // anyway would publish a stock level for a uuid no register can resolve.
   if (!existing) return false
-  if (existing.stock_updated_at >= incomingAt) return false
+  if (existing.stock_updated_at >= incomingAt) {
+    if (resend) logChange('stock', payload.uuid, payload, origin)
+    return false
+  }
 
   db.prepare('UPDATE products SET stock = ?, stock_updated_at = ? WHERE uuid = ?')
     .run(Math.trunc(Number(payload.stock) || 0), incomingAt, payload.uuid)
@@ -955,14 +972,19 @@ const server = http.createServer(async (req, res) => {
     if (route === '/sync' && method === 'POST') {
       const body = JSON.parse((await readBody(req)).toString('utf8') || '{}')
       const origin = String(body.storeId || storeId)
+      // Set by the register's "Reenviar todo". Only product and stock honour it:
+      // sales, cortes and movements are push-only — applyRemoteChange on the
+      // register refuses them — so re-logging those would grow the feed for a
+      // reader that does not exist.
+      const resend = body.resend === true
 
       db.exec('BEGIN')
       try {
         for (const change of body.changes || []) {
           const payload = change.payload
           if (!payload) continue
-          if (change.entity === 'product') applyProduct(payload, origin)
-          else if (change.entity === 'stock') applyStock(payload, origin)
+          if (change.entity === 'product') applyProduct(payload, origin, resend)
+          else if (change.entity === 'stock') applyStock(payload, origin, resend)
           else if (change.entity === 'sale') applySale(payload, origin)
           else if (change.entity === 'corte') applyCorte(payload, origin)
           else if (change.entity === 'movement') applyMovement(payload, origin)
@@ -986,6 +1008,52 @@ const server = http.createServer(async (req, res) => {
            cursor = MAX(cursor, excluded.cursor), last_seen_at = excluded.last_seen_at,
            store_name = COALESCE(excluded.store_name, stores.store_name)`
       ).run(origin, since, now(), body.storeName ? String(body.storeName).slice(0, 120) : null)
+      // A register asking from zero has never read this feed: a fresh install,
+      // or one whose cursor was rewound because it was renamed. It cannot be
+      // bootstrapped from the log, and the reason is structural rather than
+      // unlucky — the log is trimmed on a timer (POS_PURGE_CHANGES_DAYS), while
+      // a catalogue is written to it once and then rarely touched again. Any
+      // register set up more than that many days after the shop's products were
+      // first pushed would find nothing to replay and sync forever into an
+      // empty catalogue, with no error to show for it.
+      //
+      // So answer a cold start with the catalogue as it stands instead of the
+      // history of how it got there. `head` is read BEFORE the rows on purpose:
+      // a write landing in between then appears both in this snapshot and in
+      // the log the register reads next, and applying it twice is harmless,
+      // whereas reading head afterwards would let that write fall in the gap
+      // and be skipped. Unfiltered by origin, too — a register bootstrapping
+      // wants the shop's catalogue, not the subset somebody else happened to
+      // push. This assumes a catalogue that fits one response, which for a
+      // corner shop is hundreds of rows.
+      //
+      // A wholly empty feed hands back cursor 0, so the register asks from zero
+      // again next cycle and re-reads the snapshot. That is idempotent — the
+      // merge rules reject everything it already holds — and it stops of its
+      // own accord the moment anything at all is logged. Not worth machinery to
+      // avoid: when head is 0 there is nothing else the server could send.
+      if (since === 0) {
+        const head = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM changes').get().seq
+        const snapshot = []
+        for (const p of db.prepare('SELECT * FROM products ORDER BY rowid').all()) {
+          // Product before stock, per uuid: the register cannot attach a
+          // quantity to a row it has not been told about yet.
+          snapshot.push({
+            entity: 'product', uuid: p.uuid, at: p.updated_at,
+            payload: {
+              uuid: p.uuid, barcode: p.barcode, name: p.name,
+              priceCents: p.price_cents, imageFile: p.image_file,
+              active: p.active, trackStock: p.track_stock, updatedAt: p.updated_at,
+            },
+          })
+          snapshot.push({
+            entity: 'stock', uuid: p.uuid, at: p.stock_updated_at,
+            payload: { uuid: p.uuid, stock: p.stock, updatedAt: p.stock_updated_at },
+          })
+        }
+        return json(res, 200, { cursor: String(head), changes: snapshot })
+      }
+
       const rows = db.prepare(
         `SELECT seq, entity, uuid, payload, at FROM changes
           WHERE seq > ? AND origin <> ? ORDER BY seq LIMIT 500`

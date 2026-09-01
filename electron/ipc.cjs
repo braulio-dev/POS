@@ -132,7 +132,26 @@ function registerIpc({ imageDir }) {
 
   ipcMain.handle('settings:get', () => db.getSettings())
   ipcMain.handle('settings:set', (_e, key, value) => {
+    // Read before writing: renaming this register invalidates where it is in
+    // the server's feed, and the old name is the only way to notice.
+    const previousStoreId =
+      String(key) === 'syncStoreId' ? db.getSettingRaw('syncStoreId') : null
+
     db.setSetting(key, value)
+
+    // The server filters a register's pull with `origin <> storeId`, so every
+    // change the *old* name pushed was skipped rather than delivered — while
+    // the cursor still advanced past it, because it advances to the last row
+    // actually returned. Keeping that cursor after a rename leaves those rows
+    // permanently unreachable: the register asks for `seq > cursor` and they
+    // all sit below it. Rewinding to zero is the only honest answer; the merge
+    // rules in applyRemoteChange reject anything staler than what we hold, so
+    // replaying the feed from the start cannot roll local data backwards.
+    if (previousStoreId !== null && String(value) !== previousStoreId) {
+      db.setSyncState('cursor', '0')
+      console.log(`[sync] store id ${previousStoreId} -> ${value}, cursor rewound to 0`)
+    }
+
     // Sync cadence and credentials live in settings, so the worker has to be
     // re-armed whenever they change or the new interval never takes effect.
     if (String(key).startsWith('sync')) sync.reschedule()

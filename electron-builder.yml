@@ -41,15 +41,29 @@ win:
   # first run. README.md tells the installer what to click.
 
 nsis:
-  # Per-user, not per-machine: no admin prompt during install, and it matches
-  # how autostart is registered (HKCU\...\Run, see electron/kiosk.cjs).
+  # The install mode is a decision the technician makes at the counter, not one
+  # baked in here, so the installer asks instead of assuming.
+  #
+  # electron-builder derives that page from the two flags below:
+  #   oneClick: true                  -> no pages at all, silent install
+  #   oneClick: false + perMachine: true  -> no page, always per-machine
+  #   oneClick: false + perMachine: false -> the install-mode page (this)
+  # So `perMachine: false` here does NOT mean "always per-user"; it means "let
+  # the operator pick". Setting it true would silently remove the choice again.
+  oneClick: false
   perMachine: false
-  oneClick: true
+  # Choosing "all users" writes to C:\Program Files and needs UAC. Letting the
+  # installer request elevation itself avoids making the technician quit, find
+  # the .exe and re-run it as administrator mid-setup.
+  allowElevation: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   # The register is the point of the machine, so launching straight after install
-  # means the owner sees it working before the technician leaves.
+  # means the owner sees it working before the technician leaves. On an assisted
+  # installer this becomes a ticked checkbox on the final page rather than an
+  # automatic launch -- one extra click, same outcome.
   runAfterFinish: true
   # Product images and the database live in userData and must survive an
-  # upgrade. Deleting them would wipe the shop's catalogue.
+  # upgrade. Deleting them would wipe the shop's catalogue. userData is per
+  # Windows account either way, so the install mode does not move it.
   deleteAppDataOnUninstall: false

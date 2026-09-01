@@ -15,6 +15,8 @@ const db = require('./db.cjs')
  * `server/README.md` for the reference implementation.
  *
  *   POST {url}/sync        push outbox changes, pull everything newer than a cursor
+ *                          (send resend:true to have the server re-publish rows
+ *                           it already holds, for a register rebuilding a feed)
  *   GET  {url}/images      list filenames the server holds
  *   GET  {url}/images/:f   download one
  *   PUT  {url}/images/:f   upload one
@@ -92,6 +94,11 @@ async function pushAndPull(cfg) {
   const pending = db.pendingOutbox(PUSH_BATCH)
   const state = db.getSyncState()
 
+  // Survives a restart and stays set across however many batches the snapshot
+  // takes to drain, because a resend the register forgets halfway through is a
+  // resend that only half worked. Cleared below once the outbox is empty.
+  const resend = state.resend === '1'
+
   const res = await request(cfg, '/sync', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -99,6 +106,7 @@ async function pushAndPull(cfg) {
       storeId: cfg.storeId,
       storeName: cfg.storeName || null,
       since: state.cursor || null,
+      resend,
       changes: pending.map((row) => ({
         entity: row.entity,
         uuid: row.entity_uuid,
@@ -111,6 +119,8 @@ async function pushAndPull(cfg) {
   const body = await res.json()
 
   db.markOutboxSent(pending.map((r) => r.id))
+
+  if (resend && db.countPendingOutbox() === 0) db.setSyncState('resend', '0')
 
   let applied = 0
   for (const change of body.changes || []) {
@@ -253,6 +263,11 @@ async function resendAll() {
 
   const queued = db.enqueueFullSnapshot({ includeHistory: true })
   db.setSyncState('backfilled', '1')
+  // Tells the server this push is a repopulation, not an edit. Without it the
+  // server drops every row on the floor as "not newer than what I hold" and the
+  // pull feed — the only thing another register can read — stays exactly as
+  // incomplete as it was.
+  db.setSyncState('resend', '1')
   const result = await syncNow({ force: true })
   return { ...result, queued }
 }

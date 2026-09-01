@@ -46,8 +46,9 @@ no `node_modules`.
 
 For a shop counter on any Windows edition, including Home.
 
-1. **Run the installer.** Per-user under `%LOCALAPPDATA%`, so no administrator
-   password is requested. No wizard; it installs and launches itself.
+1. **Run the installer.** A short wizard asks who to install for. Take the
+   default, **"Only for me"** — it lands under `%LOCALAPPDATA%` and asks for no
+   administrator password. Tick **Run POS El Paisa** on the last page.
 2. **Windows warns** — *"Windows protected your PC"*. The app is not
    code-signed. **More info → Run anyway**. Once only.
 3. **It opens as an ordinary window.** The lock is off until someone turns it
@@ -96,18 +97,14 @@ does not fight it.
 - **Third-party kiosk software** generally works; it drives an ordinary Win32
   window.
 
-**B2. Rebuild the installer as per-machine.** A per-user install lands in the
-*installing account's* `%LOCALAPPDATA%`, and the dedicated kiosk account has a
-different one and cannot see it — the shell would fail to start. In
-`electron-builder.yml`:
+**B2. Install per-machine.** A per-user install lands in the *installing
+account's* `%LOCALAPPDATA%`, and the dedicated kiosk account has a different one
+and cannot see it — the shell would fail to start.
 
-```yaml
-nsis:
-  perMachine: true      # C:\Program Files\POS El Paisa\ — same path for every account
-  oneClick: true
-```
-
-Then `npm run dist` again. Installing now asks for administrator rights once.
+No rebuild is needed. The installer asks: on the install-mode page choose
+**"Anyone who uses this computer"**, accept the one administrator prompt, and
+the app lands in `C:\Program Files\POS El Paisa\` — the same path for every
+account. (Profile A can take the default, "Only for me".)
 
 **B3. Install and configure the app, signed in as the kiosk account** so the
 settings below are written to that account's database [^paths]:
@@ -158,6 +155,132 @@ cashier, not someone with physical administrator rights.
 
 ---
 
+## Updating an installed register
+
+The update itself is one file: the new `Setup .exe` replaces the old install in
+place. Nothing needs uninstalling first, and no data is exported or re-imported,
+because the shop's data was never inside the install directory to begin with.
+
+### What moves and what does not
+
+| | On an update |
+|---|---|
+| Install directory [^paths] | Replaced wholesale — old version uninstalled, new one written |
+| `%APPDATA%\pos-elpaisa\pos.db` | **Untouched.** Catalogue, sales, cortes, settings, sync cursor |
+| `%APPDATA%\pos-elpaisa\images\` | **Untouched.** Product photos |
+| Autostart entry [^paths] | Re-asserted by the new build on first launch |
+| Owner's password, `Modo caja`, printer | All in `pos.db`, so all preserved |
+| Sync server data | Different machine entirely — see *Updating the sync server* |
+
+The one line that makes this true is in `electron-builder.yml`:
+
+```yaml
+deleteAppDataOnUninstall: false
+```
+
+NSIS uninstalls the old version before writing the new one, so an update runs
+the uninstaller every time. That flag is the only thing standing between an
+ordinary update and a wiped catalogue. Do not change it.
+
+### 1. Back up first — two copies, they fail differently
+
+**Server backup.** Configuración → Respaldos → *Respaldar ahora*. Runs
+`VACUUM INTO` on the server, which writes a consistent single-file snapshot
+without blocking writers, so the register can keep selling while it runs. This
+protects you from a bad register, but not from losing the VPS.
+
+**Local database copy.** **Close the app first**, then copy all three files
+together — `pos.db`, `pos.db-wal`, `pos.db-shm` [^paths]. The database runs in
+WAL mode, so recent writes live in the `-wal` file rather than in `pos.db`;
+copying `pos.db` alone from a running register gives you a snapshot that is
+silently missing the most recent sales. This is the copy that gets you back if
+the update itself goes wrong.
+
+### 2. Build, on the development machine
+
+```sh
+git pull
+# bump "version" in package.json
+npm install
+npm run dist
+```
+
+Bump `version` even for a small change. It is what the built filename and
+Add/Remove Programs will say, and it is the only way to tell from the counter
+which build is actually on that machine.
+
+Run the result on the dev machine once before it travels. `npm run dist` runs
+`tsc --noEmit` first, so a type error stops the build — but nothing checks that
+the app still *opens a database it has not seen before*, and that is the step
+that matters here.
+
+### 3. Update the sync server before the registers
+
+Skip only if the release does not touch `server/`. On the VPS:
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+> **Never `docker compose down -v`.** The `-v` destroys the `pos-data` volume,
+> which holds the server database *and* every automatic backup, since those are
+> written to `/data/backups` inside that same volume. Plain `docker compose
+> down` leaves the volume alone. If you want backups that survive losing the
+> volume — or the VPS — copy them off the machine on a schedule.
+
+Server first, registers after. Server-side migrations are additive
+(`addColumnIfMissing`), and the server is written to tolerate a register that
+has not been updated yet: a till that sends no payment split, for instance, has
+its whole total credited to cash rather than being rejected. The reverse
+ordering has no such guarantee.
+
+### 4. Update each register
+
+One at a time, so the shop can still sell on the other one.
+
+1. Exit the register: Ctrl + Alt + Q and the owner's password (Profile A), or
+   whatever the kiosk layer provides (Profile B).
+2. Confirm `POS El Paisa.exe` is gone from Task Manager. An installer that has
+   to fight a running process is where in-place updates go wrong.
+3. Run the new `Setup .exe`, choosing **the same install scope as last time** —
+   per-user or per-machine [^whichexe]. A mismatch does not overwrite anything;
+   it leaves *two* installs on the machine, and the autostart entry keeps
+   pointing at the stale one.
+4. Launch it. Schema migrations run at open, before the window appears.
+
+### 5. Verify
+
+- [ ] Product count matches what the register had before
+- [ ] A test ticket prints — the print script lives at an unpacked path outside
+      `app.asar` [^paths], and a broken build breaks it silently
+- [ ] Configuración → Sincronización shows a recent *última sincronización*,
+      no error, and **pendientes back to 0**
+- [ ] Version in Configuración matches what you built
+- [ ] Reboot lands on the register with no human input (Profile A)
+
+### Rolling back
+
+Migrations are forward-only. `openDatabase` runs `CREATE TABLE IF NOT EXISTS`
+and `addColumnIfMissing` on every launch — there is no schema version and there
+are no down-migrations. So an older build opening a database a newer build has
+already touched is untested territory: extra columns it does not know about are
+usually harmless, but nothing guarantees it.
+
+A rollback is therefore **two** steps, not one: reinstall the old `Setup .exe`
+*and* restore the `pos.db` copy from step 1. Doing only the first is the case
+nobody has tested.
+
+> **Adding a register is not the same as updating one.** A second machine must
+> get its own **NOMBRE DE ESTA CAJA** in Configuración → Sincronización before
+> it syncs. The server filters each register's pull with `origin <> storeId`, so
+> two registers sharing a name each become invisible to the other — the new one
+> silently receives nothing but changes made from the admin page. Changing the
+> name now rewinds that register's cursor automatically so it re-reads the feed
+> from the start; older builds do not, and need `pos.db` deleted instead.
+
+---
+
 ## Troubleshooting
 
 **Tickets do not print.** Confirm the printer in Configuración → Impresora, then
@@ -177,9 +300,10 @@ unticked it, or this is a fresh install where step 5 was skipped.
 to reset everything to factory — **this destroys the catalogue and sales
 history**. Restore from a backup first if one exists.
 
-**Upgrading.** Raise `version` in `package.json`, rebuild, run the new
-installer on the register. It replaces in place. Settings, database and product
-images are untouched, by the installer and the uninstaller both.
+**Upgrading.** See *Updating an installed register* above. Short version:
+raise `version`, `npm run dist`, run the new installer on the register with the
+same install scope. It replaces in place and leaves the database and product
+images alone.
 
 ---
 
@@ -193,9 +317,10 @@ images are untouched, by the installer and the uninstaller both.
     decompresses everything into the install directory, creates Desktop and
     Start Menu shortcuts, registers an uninstaller in Add/Remove Programs,
     launches the app and exits. After that it has no further role and can be
-    deleted. Because `oneClick: true`, there is no wizard; because
-    `perMachine: false` (the default here), there is no UAC prompt. Two
-    switches help when deploying several registers: `/S` installs silently and
+    deleted. Because `oneClick: false`, it is a short wizard: it asks whether to
+    install for this account only or for all users, and only the second choice
+    raises a UAC prompt. Two switches help when deploying several registers:
+    `/S` installs silently — per-user unless combined with `/allusers` — and
     `/D=C:\path` overrides the directory (`/D` must come last and unquoted).
 
 [^whichexe]: **Which executable to run.** Always the *installed* one, never the
