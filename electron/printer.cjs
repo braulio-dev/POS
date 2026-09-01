@@ -6,7 +6,21 @@ const crypto = require('node:crypto')
 const escpos = require('./escpos.cjs')
 
 const PS = 'powershell.exe'
-const SCRIPT = path.join(__dirname, '..', 'scripts', 'raw-print.ps1')
+
+/**
+ * Path to the spooler script, as PowerShell can see it.
+ *
+ * Packaged, the app lives inside app.asar — a virtual archive that only Node's
+ * patched fs understands. powershell.exe is an outside process and cannot read
+ * a path through it, so the script is listed under asarUnpack in
+ * electron-builder.yml and extracted to app.asar.unpacked alongside it.
+ * __dirname still reports the archive path, so it is rewritten here.
+ *
+ * Unpackaged the replace matches nothing and the path is used as-is.
+ */
+const SCRIPT = path
+  .join(__dirname, '..', 'scripts', 'raw-print.ps1')
+  .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`)
 
 function runPowerShell(args, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {

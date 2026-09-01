@@ -28,6 +28,7 @@ type Protected = 'settings' | 'inventory'
 type Overlay =
   | { kind: 'none' }
   | { kind: 'password'; then: Protected }
+  | { kind: 'exit' }
   | { kind: 'settings' }
   | { kind: 'inventory' }
   | { kind: 'corte' }
@@ -54,6 +55,30 @@ export default function App() {
     refreshDrawer()
     pos.getSettings().then(setSettings)
   }, [refreshProducts, refreshDrawer])
+
+  /**
+   * The way out of kiosk mode.
+   *
+   * It has to be a chord the register itself owns, because the main process
+   * swallows every key Windows would normally use to escape fullscreen — see
+   * SWALLOWED in electron/kiosk.cjs. Ctrl+Alt+Q is deliberately awkward and
+   * undocumented on screen: the owner is told it, the cashier is not. It is
+   * also outside anything the scanner can emit, so a barcode can never fire it.
+   */
+  useEffect(() => {
+    async function handle(e: KeyboardEvent) {
+      if (!(e.ctrlKey && e.altKey && e.key.toLowerCase() === 'q')) return
+      e.preventDefault()
+      // Modo caja is off on an ordinary desktop, where this window already
+      // closes normally. Asking for a password to unlock something that was
+      // never locked would just be a puzzle with no prize.
+      const { locked } = await pos.getKioskState()
+      if (!locked) return
+      setOverlay((current) => (current.kind === 'none' ? { kind: 'exit' } : current))
+    }
+    window.addEventListener('keydown', handle)
+    return () => window.removeEventListener('keydown', handle)
+  }, [])
 
   // Sync can change prices and stock underneath the cashier while the register
   // is idle, so the grid follows the worker rather than only reloading on open.
@@ -333,6 +358,22 @@ export default function App() {
       {overlay.kind === 'password' && (
         <PasswordPrompt
           onUnlock={() => setOverlay({ kind: overlay.then })}
+          onCancel={() => setOverlay({ kind: 'none' })}
+        />
+      )}
+
+      {/* Unlocking is the main process's call, so this prompt hands the answer
+          to kioskUnlock rather than checking it and acting on the result. */}
+      {overlay.kind === 'exit' && (
+        <PasswordPrompt
+          title="Salir de pantalla completa"
+          note="Ingresa la contraseña del dueño para desbloquear la caja."
+          confirmLabel="DESBLOQUEAR"
+          verify={(password) => pos.kioskUnlock(password)}
+          onUnlock={() => {
+            setOverlay({ kind: 'none' })
+            showToast('Caja desbloqueada')
+          }}
           onCancel={() => setOverlay({ kind: 'none' })}
         />
       )}

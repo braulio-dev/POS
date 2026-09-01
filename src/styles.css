@@ -658,6 +658,34 @@ button { font: inherit; color: inherit; cursor: pointer; }
   color: var(--muted);
 }
 
+/* States the lock's mode in words. Modo caja is opt-in, so an unarmed register
+   looks exactly like an armed one until something says otherwise. */
+.kiosk-state {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border-left: 4px solid var(--amber);
+  background: var(--field);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.kiosk-state-on {
+  border-left-color: var(--green);
+  background: var(--green-tint);
+}
+
+/* Separates changing the password from the kiosk controls under it: they are
+   both "seguridad" but one is a credential and the other locks the machine. */
+.settings-rule {
+  width: 100%;
+  height: 1px;
+  margin: 4px 0;
+  border: 0;
+  background: var(--field);
+}
+
 .settings-status {
   margin: 0;
   padding: 10px 12px;

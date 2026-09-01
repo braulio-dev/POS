@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url')
 const db = require('./db.cjs')
 const sync = require('./sync.cjs')
 const { registerIpc } = require('./ipc.cjs')
+const kiosk = require('./kiosk.cjs')
 
 const IS_DEV = process.env.POS_DEV === '1'
 const DATA_DIR = app.getPath('userData')
@@ -16,15 +17,22 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'posimg', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ])
 
-function createWindow() {
+/**
+ * `armed` is the machine's kioskMode setting: this install is a register, not
+ * someone's laptop. It is applied at construction rather than by kiosk.attach
+ * afterwards, because flipping a built window into fullscreen shows a visible
+ * jump on the way up.
+ */
+function createWindow(armed) {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     backgroundColor: '#EDE0AC',
     autoHideMenuBar: true,
-    // In production the register runs fullscreen with no chrome to escape into.
-    fullscreen: !IS_DEV,
-    kiosk: !IS_DEV,
+    // Only a register runs with no chrome to escape into. Everywhere else this
+    // is an ordinary window that closes like one.
+    fullscreen: armed,
+    kiosk: armed,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -51,7 +59,22 @@ app.whenReady().then(() => {
   })
 
   registerIpc({ imageDir: IMAGE_DIR })
-  const win = createWindow()
+
+  // Two independent conditions, and both must hold. Development never locks —
+  // being unable to close the app you are editing is a miserable way to work —
+  // and a machine nobody armed is just an app.
+  const settings = db.getSettings()
+  const armed = !IS_DEV && settings.kioskMode === '1'
+
+  const win = createWindow(armed)
+
+  // Attached even when unarmed, so the renderer can ask for its state and the
+  // Seguridad screen can arm it later without a restart.
+  kiosk.attach(win, { startLocked: armed })
+
+  // Re-asserted every launch rather than only on first run: the Run key is
+  // ordinary user-writable registry, so anything can clear it between shifts.
+  if (settings.autoStart === '1') kiosk.setAutoStart(true)
 
   // The sync worker runs in the main process, not the renderer: it has to keep
   // draining the outbox while the cashier is mid-sale, and it must not die when
@@ -72,5 +95,8 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('before-quit', () => sync.stop())
+app.on('before-quit', () => {
+  sync.stop()
+  kiosk.dispose()
+})
 app.on('window-all-closed', () => app.quit())

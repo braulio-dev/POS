@@ -347,6 +347,17 @@ function seedDefaults() {
   seed.run('terminalApiKey', '')
   seed.run('terminalDeviceId', '')
 
+  // Off by default, and deliberately so: the same .exe runs on the counter and
+  // on the owner's laptop, and only one of those should be impossible to close.
+  // Arming it is an explicit act, done once per machine in Configuracion ->
+  // Seguridad. The cost is that an unarmed register looks entirely normal, so
+  // that screen states the mode out loud rather than only ticking a box.
+  seed.run('kioskMode', '0')
+
+  // Follows the same rule: a machine only relaunches itself if someone said it
+  // is a register.
+  seed.run('autoStart', '0')
+
   seed.run('syncEnabled', '0')
   seed.run('syncUrl', '')
   seed.run('syncKey', '')

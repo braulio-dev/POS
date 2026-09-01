@@ -1,0 +1,48 @@
+# Packaging for the register. Kept as YAML rather than a "build" block in
+# package.json so the decisions below can carry the reasoning with them.
+
+appId: mx.elpaisa.pos
+productName: POS El Paisa
+copyright: Abarrotes El Paisa
+
+directories:
+  output: release
+  buildResources: build
+
+# Allow-list, not a deny-list: anything not named here stays out of the
+# installer. That keeps src/, the .captures* screenshot dumps, the sync server
+# and the seed scripts off the shop machine.
+files:
+  - electron/**/*
+  - dist/**/*
+  - scripts/raw-print.ps1
+  - package.json
+
+# The ESC/POS spooler is run by powershell.exe, which is not an Electron process
+# and cannot read inside app.asar. It ships via `files` above, then gets
+# unpacked back out to a real path on disk; electron/printer.cjs rewrites its
+# __dirname-derived path to match.
+asarUnpack:
+  - scripts/raw-print.ps1
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  # There is no code-signing certificate, so Windows SmartScreen warns on the
+  # first run. README.md tells the installer what to click.
+
+nsis:
+  # Per-user, not per-machine: no admin prompt during install, and it matches
+  # how autostart is registered (HKCU\...\Run, see electron/kiosk.cjs).
+  perMachine: false
+  oneClick: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # The register is the point of the machine, so launching straight after install
+  # means the owner sees it working before the technician leaves.
+  runAfterFinish: true
+  # Product images and the database live in userData and must survive an
+  # upgrade. Deleting them would wipe the shop's catalogue.
+  deleteAppDataOnUninstall: false

@@ -38,6 +38,13 @@ contextBridge.exposeInMainWorld('pos', {
   verifyPassword: (password) => ipcRenderer.invoke('settings:verifyPassword', password),
   setPassword: (current, next) => ipcRenderer.invoke('settings:setPassword', current, next),
 
+  getKioskState: () => ipcRenderer.invoke('kiosk:state'),
+  setKioskMode: (enabled) => ipcRenderer.invoke('kiosk:setMode', enabled),
+  kioskUnlock: (password) => ipcRenderer.invoke('kiosk:unlock', password),
+  kioskRelock: () => ipcRenderer.invoke('kiosk:relock'),
+  kioskQuit: () => ipcRenderer.invoke('kiosk:quit'),
+  setAutoStart: (enabled) => ipcRenderer.invoke('kiosk:setAutoStart', enabled),
+
   listPrinters: () => ipcRenderer.invoke('printer:list'),
   testPrinter: (printerName) => ipcRenderer.invoke('printer:test', printerName),
   printReceipt: (sale) => ipcRenderer.invoke('printer:receipt', sale),

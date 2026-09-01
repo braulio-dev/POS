@@ -13,10 +13,14 @@ server/.env
 node_modules/
 dist/
 
-# electron-builder / electron-packager output, whichever gets used later.
+# electron-builder output. `build/` is deliberately NOT here: since packaging
+# was set up it is the buildResources directory, holding the icon that the
+# installer is made from, so it is a source input and not an artefact.
 out/
 release/
-build/
+# Alternate output dirs, used when a stale build is still held open by Defender
+# or the file indexer and cannot be deleted in place.
+release-*/
 
 *.tsbuildinfo
 .vite/

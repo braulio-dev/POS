@@ -1,4 +1,4 @@
-const { ipcMain, dialog } = require('electron')
+const { ipcMain, dialog, BrowserWindow } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const crypto = require('node:crypto')
@@ -6,6 +6,7 @@ const db = require('./db.cjs')
 const printer = require('./printer.cjs')
 const sync = require('./sync.cjs')
 const terminal = require('./terminal.cjs')
+const kiosk = require('./kiosk.cjs')
 
 /**
  * Every channel the renderer can reach, in one place. main.cjs and the
@@ -143,6 +144,25 @@ function registerIpc({ imageDir }) {
   ipcMain.handle('settings:verifyPassword', (_e, password) => db.verifyPassword(password))
   ipcMain.handle('settings:setPassword', (_e, current, next) => db.setPassword(current, next))
 
+  /* ---------------------------------------------------------------- kiosk */
+
+  // Unlocking is decided here for the same reason the password is checked here:
+  // a renderer that could unlock itself is not a lock. The renderer may ask,
+  // and it may be told no.
+  ipcMain.handle('kiosk:state', () => ({
+    locked: kiosk.isLocked(),
+    kioskMode: kiosk.isArmed(),
+    autoStart: kiosk.getAutoStart(),
+  }))
+  ipcMain.handle('kiosk:setMode', (_e, enabled) => kiosk.setKioskMode(enabled))
+  ipcMain.handle('kiosk:unlock', (_e, password) => kiosk.unlock(password))
+  ipcMain.handle('kiosk:relock', () => kiosk.relock())
+  ipcMain.handle('kiosk:quit', () => kiosk.quit())
+  ipcMain.handle('kiosk:setAutoStart', (_e, enabled) => {
+    db.setSetting('autoStart', enabled ? '1' : '0')
+    return kiosk.setAutoStart(enabled)
+  })
+
   /* -------------------------------------------------------------- printing */
 
   ipcMain.handle('printer:list', () => printer.listPrinters())
@@ -206,8 +226,11 @@ function registerIpc({ imageDir }) {
   // Opens a picker and copies the chosen image into user data, returning the
   // stored filename. Copying (not referencing) means the photo survives the
   // original file being moved or deleted off a USB stick.
-  ipcMain.handle('images:pick', async () => {
-    const res = await dialog.showOpenDialog({
+  ipcMain.handle('images:pick', async (event) => {
+    // Parented to the calling window: while the register is locked it sits
+    // always-on-top, and an ownerless dialog would open behind it.
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const res = await dialog.showOpenDialog(parent, {
       title: 'Elegir imagen del producto',
       properties: ['openFile'],
       filters: [{ name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],

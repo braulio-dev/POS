@@ -67,6 +67,11 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
   const [maint, setMaint] = useState<MaintenanceStatus | null>(null)
   const [maintError, setMaintError] = useState<string | null>(null)
 
+  // Lock state is asked of the main process rather than inferred from
+  // settings: kioskMode says the machine is a register, `locked` says whether
+  // it is sealed right now, and an owner who pressed Ctrl+Alt+Q is neither.
+  const [kiosk, setKiosk] = useState<{ locked: boolean; kioskMode: boolean } | null>(null)
+
   const [currentPw, setCurrentPw] = useState('')
   const [newPw, setNewPw] = useState('')
   const [pwStatus, setPwStatus] = useState<string | null>(null)
@@ -82,6 +87,7 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
     pos.listPrinters().then(setPrinters).catch(() => setPrinters([]))
     pos.listCortes(10).then(setCortes).catch(() => setCortes([]))
     pos.getSyncStatus().then(setSync).catch(() => setSync(null))
+    pos.getKioskState().then(setKiosk).catch(() => setKiosk(null))
 
     // The worker pushes its own updates, so a sync running in the background
     // shows up here without this screen polling for it.
@@ -684,6 +690,92 @@ export function SettingsModal({ onSettingsChange, onClose }: Props) {
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={changePassword} disabled={!currentPw || !newPw}>
                   Cambiar contraseña
+                </button>
+              </div>
+
+              <hr className="settings-rule" />
+
+              {/* Modo caja is off until someone turns it on, so an unarmed
+                  register is indistinguishable from a normal window. That is
+                  the one hole in an opt-in lock, and the banner below is the
+                  patch for it: the state is stated, not left to be inferred
+                  from an unticked box. */}
+              <p className={kiosk?.kioskMode ? 'kiosk-state kiosk-state-on' : 'kiosk-state'}>
+                {kiosk === null
+                  ? 'Modo caja: no disponible'
+                  : kiosk.kioskMode
+                    ? kiosk.locked
+                      ? 'Modo caja ACTIVO — la pantalla está bloqueada.'
+                      : 'Modo caja ACTIVO — desbloqueada hasta que se bloquee o se reinicie.'
+                    : 'Modo caja APAGADO — esta computadora se comporta como una ventana normal.'}
+              </p>
+
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={kiosk?.kioskMode ?? false}
+                  disabled={kiosk === null}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    const result = await pos.setKioskMode(enabled)
+                    if (!result.ok) {
+                      setPwStatus('No se pudo cambiar el modo caja')
+                      return
+                    }
+                    // Re-read rather than assume: the main process decides, and
+                    // ticking the box seals the window there and then.
+                    setKiosk(await pos.getKioskState())
+                  }}
+                />
+                <span>Modo caja: pantalla completa bloqueada</span>
+              </label>
+
+              {/* Writes HKCU\...\Run through the main process. Stored as a
+                  setting too, so main.cjs can re-assert it every launch —
+                  anything on the machine can clear that key. */}
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={settings.autoStart === '1'}
+                  onChange={async (e) => {
+                    const enabled = e.target.checked
+                    const result = await pos.setAutoStart(enabled)
+                    if (!result.ok) {
+                      setPwStatus(result.error ?? 'No se pudo cambiar el inicio automático')
+                      return
+                    }
+                    setSettings({ ...settings, autoStart: enabled ? '1' : '0' })
+                  }}
+                />
+                <span>Abrir la caja al encender la computadora</span>
+              </label>
+
+              <p className="muted-note">
+                Con el modo caja activo no se puede salir sin esta contraseña.
+                Para desbloquear: Ctrl + Alt + Q.
+              </p>
+
+              <div className="modal-actions">
+                <button
+                  className="btn-secondary"
+                  disabled={!kiosk?.kioskMode || kiosk?.locked}
+                  onClick={async () => {
+                    await pos.kioskRelock()
+                    setKiosk(await pos.getKioskState())
+                  }}
+                >
+                  Bloquear pantalla completa
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={async () => {
+                    const result = await pos.kioskQuit()
+                    // Only reachable while unlocked; the main process is the
+                    // one that decides, so a refusal is reported, not assumed.
+                    if (!result.ok) setPwStatus(result.error ?? 'La caja está bloqueada')
+                  }}
+                >
+                  Cerrar la caja
                 </button>
               </div>
             </>

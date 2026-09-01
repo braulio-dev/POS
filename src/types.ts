@@ -84,6 +84,15 @@ export interface Settings {
    */
   cashFloatCents: string
 
+  /**
+   * '1' when this machine is a register: fullscreen, sealed, no way out but the
+   * password. Off by default — the same build also runs on an ordinary desktop.
+   */
+  kioskMode: string
+
+  /** '1' while the register relaunches itself at Windows login. */
+  autoStart: string
+
   /** '1' while the card terminal is offered on the payment screen. */
   terminalEnabled: string
   /** 'manual' (cashier types the auth code) | 'clip' | 'mercadopago'. */
@@ -352,6 +361,21 @@ export interface PosApi {
   /** Answers yes/no only — the hash never leaves the main process. */
   verifyPassword(password: string): Promise<boolean>
   setPassword(current: string, next: string): Promise<PasswordResult>
+
+  /**
+   * `locked` is this session; `kioskMode` is whether the machine is a register
+   * at all. They can differ: an owner who unlocked to change a price is
+   * unlocked on an armed machine.
+   */
+  getKioskState(): Promise<{ locked: boolean; kioskMode: boolean; autoStart: boolean }>
+  /** Arms or disarms the machine, and applies it immediately. */
+  setKioskMode(enabled: boolean): Promise<{ ok: boolean; kioskMode?: boolean; locked?: boolean }>
+  /** Asks the main process to lift the lock. Yes or no, nothing else. */
+  kioskUnlock(password: string): Promise<{ ok: boolean; error?: string }>
+  kioskRelock(): Promise<{ ok: boolean }>
+  /** Only succeeds while unlocked. */
+  kioskQuit(): Promise<{ ok: boolean; error?: string }>
+  setAutoStart(enabled: boolean): Promise<{ ok: boolean; error?: string; enabled?: boolean }>
 
   listPrinters(): Promise<string[]>
   testPrinter(printerName: string): Promise<PrintResult>

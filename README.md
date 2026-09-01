@@ -7,6 +7,8 @@ Electron + React + SQLite register, built to run fullscreen on the store PC.
     npm run dev      # Vite + Electron, windowed, hot reload
     npm run build    # typecheck + bundle the renderer into dist/
     npm start        # run the built app (fullscreen kiosk)
+    npm run pack     # unpacked build in release/win-unpacked, no installer
+    npm run dist     # the installer: release/POS El Paisa Setup <version>.exe
 
 Opening http://localhost:5173 in a plain browser also works — `src/lib/api.ts`
 swaps in an in-memory stand-in when the Electron bridge is absent. Handy for
@@ -21,6 +23,51 @@ Scripts run as `electron <file>` rather than `electron .`, which means Electron
 cannot read the app name out of package.json. They call `app.setName` so
 userData resolves to the same folder the real app uses; without it they would
 quietly operate on `%APPDATA%/Electron` instead.
+
+## Installing on the shop computer
+
+**[SETUP.md](SETUP.md) is the deployment guide** — step-by-step for both
+profiles (the app locking itself, or an external kiosk layer doing it), plus
+every path, registry key and edition requirement involved. The steps live there
+rather than here so there is one copy of them to keep true.
+
+The short version: `npm run dist` produces
+`release/POS El Paisa Setup <version>.exe`, you copy that one file to the
+register, and the two settings that turn a fresh install into a locked register
+— **Modo caja** and **Abrir la caja al encender** — are both off until someone
+turns them on in Configuración → Seguridad.
+
+### Locking and unlocking
+
+With Modo caja on, the register is sealed into fullscreen: F11, Alt+F4, Ctrl+W
+and the window's close button are all swallowed by the main process
+(`electron/kiosk.cjs`). With it off, none of that happens and the window closes
+like any other.
+
+Two separate facts, and the Seguridad tab shows both: `kioskMode` is whether
+this machine is a register at all and survives a restart; `locked` is whether
+it is sealed right now. An owner who pressed Ctrl+Alt+Q is unlocked on a
+machine that is still armed, and a restart re-seals it.
+
+- **To get out:** Ctrl + Alt + Q, then the owner's password. There is no flag
+  or safe mode that skips this — if the password is lost, the only ways back in
+  are Task Manager or editing `%APPDATA%/pos-elpaisa/pos.db`.
+- **To seal it again:** Configuración → Seguridad → "Bloquear pantalla
+  completa". A restart also re-locks it.
+- **To close the app for good:** unlock first, then Configuración → Seguridad →
+  "Cerrar la caja".
+
+This stops a cashier, not an administrator. Ctrl+Alt+Del and the Windows key
+belong to Windows and no application can take them, so Task Manager can still
+end the process. If the shop needs more than that, it is a Windows
+assigned-access or Group Policy job, not something the app can do.
+
+### Updating
+
+Raise `version` in package.json, rebuild, and run the new installer on the
+register; it replaces the old one in place. The database and product images in
+`%APPDATA%/pos-elpaisa` are left alone by both the installer and the
+uninstaller — see `deleteAppDataOnUninstall` in `electron-builder.yml`.
 
 ## Layout
 

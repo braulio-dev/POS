@@ -46,6 +46,8 @@ function createBrowserMock(): PosApi {
     corteThresholdCents: '200000',
     lowStockThreshold: '3',
     cashFloatCents: '0',
+    kioskMode: '0',
+    autoStart: '0',
     // On in the stand-in, unlike the real register: a browser has no scanner,
     // so the only way to exercise a scale label here is to call findByScaleCode
     // from the console, and having it disabled would just look broken.
@@ -276,6 +278,15 @@ function createBrowserMock(): PosApi {
     // is reachable during layout work.
     async verifyPassword(password) { return password === '1234' },
     async setPassword() { return { ok: false, error: 'Sin base de datos en el navegador' } },
+
+    // A browser tab has no kiosk to lock, so the stand-in reports itself open
+    // and the exit flow stays reachable during layout work.
+    async getKioskState() { return { locked: false, kioskMode: false, autoStart: false } },
+    async setKioskMode() { return { ok: false } },
+    async kioskUnlock() { return { ok: true } },
+    async kioskRelock() { return { ok: true } },
+    async kioskQuit() { return { ok: false, error: 'Sin ventana en el navegador' } },
+    async setAutoStart() { return { ok: false, error: 'Solo en Windows' } },
 
     async listPrinters() { return ['POS58 Printer'] },
     async testPrinter() { return { ok: false, error: 'Sin impresora en el navegador' } },
