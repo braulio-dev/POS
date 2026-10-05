@@ -1,0 +1,68 @@
+# Builds the Docker image(s), pushes them to GHCR and asks Dokploy to redeploy.
+# Dokploy pulls `:latest` (pull_policy: always). The webhook URL is the repo secret DOKPLOY_WEBHOOK
+# (Dokploy -> app -> Deployments -> webhook); without it the deploy step is skipped.
+name: Build & deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/ghcr.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - image: pos-sync
+            context: server
+            file: server/Dockerfile
+            target: ""
+            build-args: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/braulio-dev/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest
+            type=sha,format=short
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.build-args }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      DOKPLOY_WEBHOOK: ${{ secrets.DOKPLOY_WEBHOOK }}
+    steps:
+      - name: Trigger Dokploy redeploy
+        if: env.DOKPLOY_WEBHOOK != ''
+        run: |
+          curl -fsS -X POST -H "Content-Type: application/json"             -d '{"head_commit":{"message":"${{ github.sha }}"}}' "$DOKPLOY_WEBHOOK"
